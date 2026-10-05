@@ -10,8 +10,9 @@ static int n_fail = 0;
 #define CHECK(cond) do { if (!(cond)) {fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); ++n_fail;} } while (0)
 
 /* Test mesh: non-square on purpose, so swapped axes show up as failures.
- * NX, NY, NZ are global cell counts; the block counts are set per run. */
-enum { NX = 12, NY = 6, NZ = 4, NVAR = 3 };
+ * NX, NY, NZ are global cell counts; the block counts are set per run.
+ * Sizes grow with the halo so every block (up to 3 x 3 x 2) has >= MESH_NHALO cells. */
+enum { NX = 3 * (MESH_NHALO + 2), NY = 3 * (MESH_NHALO + 1), NZ = 2 * (MESH_NHALO + 1), NVAR = 3 };
 static int BX = 1, BY = 1, BZ = 1;
 
 static Mesh *create(void)
@@ -20,7 +21,7 @@ static Mesh *create(void)
 }
 
 /* Encoded value from global indices: tells where a value came from. Exactly
- * representable in float for |i|,|j|,|k| < 50 and v < 8. */
+ * representable in float for |i|,|j|,|k| < 50 and v < 8 (holds up to MESH_NHALO = 10). */
 static type_t code(int v, int i, int j, int k)
 {
     return (type_t)(v * 1000000 + (i + 50) * 10000 + (j + 50) * 100 + (k + 50));
@@ -307,19 +308,94 @@ static void test_centers(void)
     mesh_remove(m);
 }
 
-/* 8. invalid block counts are rejected */
+/* zero var 0 everywhere, add 1 on the box, check that exactly the box was hit */
+static void check_box(Mesh *m, int b, const int low[3], const int high[3])
+{
+    MESH_LOOP_ALL(m, i, j, k)
+        MESH_AT(m, b, 0, i, j, k) = 0;
+    MESH_LOOP_3D_END
+
+    MESH_LOOP_3D(low, high, i, j, k)
+        MESH_AT(m, b, 0, i, j, k) += 1;
+    MESH_LOOP_3D_END
+
+    MESH_LOOP_ALL(m, i, j, k)
+        int inside = low[0] <= i && i <= high[0] && low[1] <= j && j <= high[1] && low[2] <= k && k <= high[2];
+        CHECK(MESH_AT(m, b, 0, i, j, k) == (inside ? 1 : 0));
+    MESH_LOOP_3D_END
+}
+
+/* 8. box macros: grown interior and face boxes, as used by telescoping RK
+ * (stage s works on the interior grown by (MAXSTAGE-s)*NSTENCIL) */
+static void test_boxes(void)
+{
+    printf("test_boxes\n");
+    Mesh *m = create();
+    CHECK(m != NULL);
+    if (!m){
+        return;
+    }
+
+    int low[3], high[3];
+    int b = MESH_NBLOCK(m) - 1;
+
+    for (int g = 0; g <= MESH_NHALO; ++g){
+        MESH_BOX_GROWN(m, low, high, g);
+        for (int a = 0; a < 3; ++a){
+            int ga = (a < MESH_NDIM) ? g : 0;
+            CHECK(low[a] == -ga);
+            CHECK(high[a] == MESH_N(m, a) - 1 + ga);
+            // stays inside the storage for g <= halo
+            CHECK(low[a] >= -MESH_NH(m, a));
+            CHECK(high[a] <= MESH_N(m, a) + MESH_NH(m, a) - 1);
+        }
+        check_box(m, b, low, high);
+
+        for (int d = 0; d < 3; ++d){
+            // reconstruction box: one extra cell on both sides along d
+            if (g < MESH_NHALO){
+                MESH_BOX_GROWN(m, low, high, g);
+                MESH_BOX_EXTEND(low, high, d, 1, 1);
+                for (int a = 0; a < 3; ++a){
+                    int ext = (a == d && a < MESH_NDIM) ? 1 : 0;
+                    int ga = (a < MESH_NDIM) ? g : 0;
+                    CHECK(low[a] == -ga - ext);
+                    CHECK(high[a] == MESH_N(m, a) - 1 + ga + ext);
+                }
+                check_box(m, b, low, high);
+
+                // faces normal to d: N + 2g + 1 faces along d (unused axis: unchanged)
+                MESH_BOX_FACES(m, low, high, g, d);
+                for (int a = 0; a < 3; ++a){
+                    int ext = (a == d && a < MESH_NDIM) ? 1 : 0;
+                    int ga = (a < MESH_NDIM) ? g : 0;
+                    CHECK(low[a] == -ga);
+                    CHECK(high[a] == MESH_N(m, a) - 1 + ga + ext);
+                }
+                check_box(m, b, low, high);
+            }
+        }
+    }
+
+    mesh_remove(m);
+}
+
+/* 9. invalid block counts and blocks smaller than the halo are rejected */
 static void test_invalid(void)
 {
     printf("test_invalid\n");
-    Mesh *m = mesh_create(NX, NY, NZ, 5, 1, 1, NVAR); // 12 % 5 != 0
+    Mesh *m = mesh_create(NX + 1, NY, NZ, 3, 1, 1, NVAR); // NX + 1 is not divisible by 3
     CHECK(m == NULL);
     mesh_remove(m);
     m = mesh_create(NX, NY, NZ, 0, 1, 1, NVAR);
     CHECK(m == NULL);
     mesh_remove(m);
+    m = mesh_create(2 * (MESH_NHALO - 1), NY, NZ, 2, 1, 1, NVAR); // blocks of NHALO-1 cells
+    CHECK(m == NULL);
+    mesh_remove(m);
 }
 
-/* 9. write a deterministic mesh to a file, for cmp across variants */
+/* 10. write a deterministic mesh to a file, for cmp across variants */
 static void test_write(const char *path)
 {
     printf("test_write -> %s\n", path);
@@ -360,6 +436,7 @@ int main(int argc, char **argv)
         test_halo();
         test_blocks();
         test_centers();
+        test_boxes();
     }
     test_invalid();
     test_write(out);
