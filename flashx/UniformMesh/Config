@@ -4,7 +4,7 @@
 
 REQUIRES Grid/GridMain/UG
 
-D um_nblockx number of UniformMesh blocks along x (must divide the global cell count; blocks need >= NGUARD cells)
+D um_nblockx number of UniformMesh blocks along x (must divide iGridSize; blocks need >= NGUARD cells)
 PARAMETER um_nblockx INTEGER 1
 
 D um_nblocky number of UniformMesh blocks along y

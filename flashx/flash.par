@@ -2,17 +2,18 @@
 #  Based on Simulation/SimulationMain/IsentropicVortex/flash.par.
 #  The vortex is advected diagonally and is back at the center at t = 10.
 
+#               grid (UG with +nofbs: the global size is set here)
+iGridSize       = 64
+jGridSize       = 64
+
 #               UniformMesh
-um_nblockx      = 4      # must divide the global cell count (nxb), blocks need >= NGUARD cells
+um_nblockx      = 4      # must divide iGridSize, blocks need >= NGUARD cells
 um_nblocky      = 4
 
 #               simulation parameters
 basenm          = "isentropic_vortex_"
 log_file        = "isentropic_vortex.log"
 restart         = .false.
-checkpointFileIntervalTime = 0.0
-checkpointFileIntervalStep = 100
-checkpointFileNumber = 0
 
 nend            = 400
 tmax            = 10.
