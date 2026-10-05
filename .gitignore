@@ -1,0 +1,11 @@
+# Build outputs
+test_mesh
+*.o
+*.bin
+
+# macOS
+.DS_Store
+
+# Generated / examples
+macro_example.ini
+mesh_config.h
