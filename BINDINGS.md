@@ -78,6 +78,7 @@ Flash-X compiles with `real` promoted to 8 bytes, so `real` and `real(mesh_rk)` 
 | `mesh_f_layout(m)` | `MESH_LAYOUT_AOS` or `MESH_LAYOUT_SOA` |
 | `mesh_f_limits(m, blockID, limits [, limitsGC])` | interior / guard-cell limits, global 1-based |
 | `mesh_f_data_ptr(m, blockID, U)` | pointer to the block's data incl. halo (zero copy) |
+| `mesh_f_set_domain(m, low, high, ierr)` | set the global domain (default `[0,1]` per axis); `dx` follows. Must match the Flash-X domain, because Spark takes `dx` from the mesh |
 | `mesh_f_deltas(m, deltas)` | `dx, dy, dz` |
 | `mesh_f_domain(m, low, high)` | global domain corners (`low` is Spark's `hy_globalLBnd`) |
 | `mesh_f_cell_coords(m, blockID, axis, edge, coords)` | centers / edges of all cells of the block incl. halo, like `Grid_getCellCoords` |

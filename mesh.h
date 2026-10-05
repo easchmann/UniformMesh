@@ -20,6 +20,8 @@ typedef struct {
 // nx, ny, nz: global interior cells, bx, by, bz: blocks per axis (must divide n)
 Mesh *mesh_create(int nx, int ny, int nz, int bx, int by, int bz, int n_var);
 void mesh_remove(Mesh *m);
+// global domain [low, high] per axis (default [0,1]), recomputes dx; returns -1 if high <= low on a used axis
+int mesh_set_domain(Mesh *m, const double low[3], const double high[3]);
 
 void mesh_fill_halo(Mesh *m);
 // fill the halo of variables v0 .. v0+nv-1 only; returns -1 (and fills nothing) for an invalid range

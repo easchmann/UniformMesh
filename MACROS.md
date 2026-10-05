@@ -197,6 +197,21 @@ Representation:
   definition = (MESH_LOW(m,a) + (MESH_GIDX(m,b,a,idx) + 0.5) * MESH_DX(m,a))
   ```
 
+### MESH_XL(m, b, a, idx), MESH_XR(m, b, a, idx)
+- **Kind:** expression (`double`)
+- **Meaning:** coordinate on axis `a` of the low (left) and high (right) edge of cell `idx` in block `b`. Spark's `hy_xLeft`/`hy_xRight` (`Grid_getLeftEdgeCoords`/`Grid_getRightEdgeCoords`). `MESH_XL(m,b,a,i)` is also the position of face `i` (see Boxes).
+- **Properties:** `MESH_XR - MESH_XL == MESH_DX`, `MESH_X` is their midpoint. `MESH_XR(m,b,a,i) == MESH_XL(m,b,a,i+1)` exactly (same integer times `dx`), also across block boundaries. The outer edges of the first/last block are the domain boundaries.
+- **Implementation**:
+  ```ini
+  [MESH_XL]
+  args = m,b,a,idx
+  definition = (MESH_LOW(m,a) + MESH_GIDX(m,b,a,idx) * MESH_DX(m,a))
+
+  [MESH_XR]
+  args = m,b,a,idx
+  definition = (MESH_LOW(m,a) + (MESH_GIDX(m,b,a,idx) + 1) * MESH_DX(m,a))
+  ```
+
 ---
 
 ## Types
@@ -223,6 +238,16 @@ Representation:
   ```ini
   [MESH_TYPE_NAME]
   definition = "float64"
+  ```
+
+### MESH_TYPE_BYTES
+- **Kind:** constant (plain integer literal)
+- **Meaning:** `sizeof(MESH_TYPE)`, usable in `#if` and by the Fortran bindings to pick the kind `mesh_rk` at compile time (see BINDINGS.md).
+- **Check:** `mesh_bind.c` has `_Static_assert(sizeof(type_t) == MESH_TYPE_BYTES)`; set it to 4 together with `MESH_TYPE float`.
+- **Implementation:**
+  ```ini
+  [MESH_TYPE_BYTES]
+  definition = 8
   ```
 
 
@@ -259,11 +284,22 @@ Representation:
 - **Meaning:** halo width on each used axis. used during creation of mesh to set
   `MESH_NH(m,a)` (`MESH_NHALO` for active axes, 0 otherwise).
 - **Open:** physics knows its stencil size. Should physics set a minimum (`MESH_NHALO_MIN`) and the glue pick `MESH_NHALO >= MESH_NHALO_MIN`? (My reasoning is that maybe setting a halo x*NHALO_MIN would need to fill the halo only every x steps?)
-- **Implementation**
+  Spark (Flash-X) does exactly this: its telescoping RK fills the halo once per step and needs `MESH_NHALO >= MAXSTAGE * NSTENCIL`.
+- **Properties:** every block needs `MESH_N(m,a) >= MESH_NHALO` on used axes (halo cells are copied from the direct neighbour only); `mesh_create` rejects smaller blocks.
+- **Implementation** (default in `general.ini`; a later fragment overrides it)
   ```ini
   [MESH_NHALO]
   definition = 1
   ```
+- **Fragments:**
+
+  | Fragment | Width | Spark config |
+  |---|---|---|
+  | `macros/halo_4.ini` | 4 | RK2, `NSTENCIL 2` (TVD, lim03, fog) |
+  | `macros/halo_8.ini` | 8 | RK2, `NSTENCIL 4` (default WENO/MP5) |
+
+  RK3 needs 6 or 12. Pass the fragment after `general.ini`:
+  `python3 ini_to_h.py macros/general.ini macros/dim_2d.ini macros/layout_soa.ini macros/halo_8.ini`
 
 ---
 
@@ -384,6 +420,60 @@ Representation:
   definition = }}}
   ```
 
+### Boxes
+Statement macros that fill `int low[3], high[3]` for `MESH_LOOP_3D`. Unused axes stay `0..0`.
+Spark's stage limits, reconstruction and face loops map onto them (`K2D`/`K3D` masking is built in):
+
+| Spark | Boxes |
+|---|---|
+| `limits(:,:,stage)` = interior ± `(MAXSTAGE-stage)*NSTENCIL` | `MESH_BOX_GROWN(m, low, high, (MAXSTAGE-stage)*NSTENCIL)` |
+| `limits ± NSTENCIL*K` (copy to `scr_rope`) | `MESH_BOX_GROWN(m, low, high, g + NSTENCIL)` |
+| `limits ∓ 1*is` along `dir` (reconstruction) | `MESH_BOX_GROWN(...)` then `MESH_BOX_EXTEND(low, high, dir, 1, 1)` |
+| `loop_3d_plus(limits, ..., is, js, ks)` (faces) | `MESH_BOX_FACES(m, low, high, g, dir)` |
+
+#### MESH_BOX_GROWN(m, low, high, g)
+- **Kind:** statement
+- **Meaning:** interior of `m` grown by `g` cells on both sides of every used axis.
+- **Properties:** inside the storage for `0 <= g <= MESH_NHALO`.
+- **Implementation:**
+  ```ini
+  [MESH_BOX_GROWN]
+  args = m,low,high,g
+  definition =
+      do { for (int a_ = 0; a_ < 3; ++a_){
+          int g_ = (a_ < MESH_NDIM) ? (g) : 0;
+          (low)[a_] = -g_;
+          (high)[a_] = MESH_N(m,a_) - 1 + g_;
+      } } while (0)
+  ```
+
+#### MESH_BOX_EXTEND(low, high, d, lo_ext, hi_ext)
+- **Kind:** statement
+- **Meaning:** move the low end of axis `d` down by `lo_ext` and the high end up by `hi_ext`. No-op if `d >= MESH_NDIM`.
+- **Implementation:**
+  ```ini
+  [MESH_BOX_EXTEND]
+  args = low,high,d,lo_ext,hi_ext
+  definition =
+      do { if ((d) < MESH_NDIM){
+          (low)[d] -= (lo_ext);
+          (high)[d] += (hi_ext);
+      } } while (0)
+  ```
+
+#### MESH_BOX_FACES(m, low, high, g, d)
+- **Kind:** statement
+- **Meaning:** faces normal to axis `d` of the box grown by `g`. Face `i` is the low face of cell `i` (between `i-1` and `i`), so a box of `n` cells along `d` has `n+1` faces. Face data lives in cell-shaped storage, as in Spark.
+- **Properties:** inside the storage for `0 <= g <= MESH_NHALO - 1`.
+- **Implementation:**
+  ```ini
+  [MESH_BOX_FACES]
+  args = m,low,high,g,d
+  definition =
+      do { MESH_BOX_GROWN(m,low,high,g);
+          MESH_BOX_EXTEND(low,high,d,0,1); } while (0)
+  ```
+
 ---
 
 ## Memory
@@ -422,7 +512,9 @@ Functions in `mesh.c`, written in terms of the macros above.
 
 | Function | Purpose |
 |---|---|
-| `mesh_create(nx, ny, nz, bx, by, bz, n_var)`, `mesh_remove` | create and remove a mesh; `n*` global cells, `b*` blocks per axis |
-| `mesh_fill_halo(m)`, `mesh_fill_halo_vars(m, v0, nv)` | halo fill from neighbouring blocks, periodic at the global boundary (exposed to physics) |
+| `mesh_create(nx, ny, nz, bx, by, bz, n_var)`, `mesh_remove` | create and remove a mesh; `n*` global cells, `b*` blocks per axis; domain `[0,1]` per axis |
+| `mesh_set_domain(m, low, high)` | set the global domain `[low, high]` per axis and recompute `dx`; returns `-1` (nothing changed) if `high <= low` on a used axis |
+| `mesh_fill_halo(m)` | halo fill of all variables from neighbouring blocks, periodic at the global boundary (exposed to physics) |
+| `mesh_fill_halo_vars(m, v0, nv)` | same, only variables `v0 .. v0+nv-1` (like Spark's guard-cell mask, but a contiguous range); returns `-1` and fills nothing for an invalid range. `mesh_fill_halo(m)` is `mesh_fill_halo_vars(m, 0, MESH_NVAR(m))` |
 | `mesh_write`, `mesh_read` | I/O |
 

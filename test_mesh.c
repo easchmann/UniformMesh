@@ -446,6 +446,41 @@ static void test_boxes(void)
     mesh_remove(m);
 }
 
+/* 8b. mesh_set_domain: dx and cell positions follow a non-unit domain, bad domains are rejected */
+static void test_domain(void)
+{
+    printf("test_domain\n");
+    Mesh *m = create();
+    CHECK(m != NULL);
+    if (!m){
+        return;
+    }
+
+    const double low[3] = { -2.0, 1.0, 0.5 }, high[3] = { 8.0, 4.0, 2.5 };
+    const double eps = 1e-12;
+    CHECK(mesh_set_domain(m, low, high) == 0);
+    MESH_LOOP_BLOCKS(m, b)
+        for (int a = 0; a < 3; ++a){
+            int n_global = MESH_N(m, a) * MESH_NB(m, a);
+            CHECK(fabs(MESH_DX(m, a) - (high[a] - low[a]) / n_global) < eps);
+            CHECK(MESH_LOW(m, a) == low[a]);
+            if (MESH_BCOORD(m, b, a) == 0){
+                CHECK(MESH_XL(m, b, a, 0) == low[a]);
+            }
+            if (MESH_BCOORD(m, b, a) == MESH_NB(m, a) - 1){
+                CHECK(fabs(MESH_XR(m, b, a, MESH_N(m, a) - 1) - high[a]) < eps);
+            }
+        }
+    MESH_LOOP_END
+
+    // high <= low on a used axis: rejected, domain unchanged
+    const double bad_high[3] = { -2.0, 4.0, 2.5 };
+    CHECK(mesh_set_domain(m, low, bad_high) == -1);
+    CHECK(fabs(MESH_DX(m, 0) - 10.0 / (MESH_N(m, 0) * MESH_NB(m, 0))) < eps);
+
+    mesh_remove(m);
+}
+
 /* 9. invalid block counts and blocks smaller than the halo are rejected */
 static void test_invalid(void)
 {
@@ -505,6 +540,7 @@ int main(int argc, char **argv)
         test_centers();
         test_boxes();
     }
+    test_domain();
     test_invalid();
     test_write(out);
 

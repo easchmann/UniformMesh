@@ -99,6 +99,8 @@ program test_mesh_f
     integer, allocatable :: cover(:, :, :)
     logical :: inside
     real(mesh_rk), parameter :: sentinel = -1
+    real(c_double), parameter :: dom_low(3) = [-2.0_c_double, 1.0_c_double, 0.5_c_double]
+    real(c_double), parameter :: dom_high(3) = [8.0_c_double, 4.0_c_double, 2.5_c_double]
 
     ndim = mesh_f_ndim()
     write(*, '(a,i0,a,i0,a,i0)') "variant: ndim=", ndim, " halo=", H, " layout=", EXPECTED_LAYOUT
@@ -194,10 +196,18 @@ program test_mesh_f
 
     ! --- geometry
     write(*, '(a)') "test_coords"
+    ! non-unit domain, so dx and positions are not just 1/N
+    call mesh_f_set_domain(m, dom_low, dom_high, ierr)
+    call check(ierr == 0, "mesh_f_set_domain")
+    call mesh_f_set_domain(m, [0.0_c_double, 0.0_c_double, 0.0_c_double], &
+                           [-1.0_c_double, 1.0_c_double, 1.0_c_double], ierr)
+    call check(ierr == -1, "invalid domain rejected")
     call mesh_f_deltas(m, deltas)
     call mesh_f_domain(m, low, high)
     do a = 1, 3
         call check(abs(deltas(a) - (high(a) - low(a)) / ngl(a)) < 1e-12_c_double, "deltas")
+        call check(abs(low(a) - dom_low(a)) < 1e-12_c_double, "domain low")
+        call check(abs(high(a) - dom_high(a)) < 1e-12_c_double, "domain high")
     end do
     do b = 1, mesh_f_nblocks(m)
         call mesh_f_limits(m, b, lim, limGC)

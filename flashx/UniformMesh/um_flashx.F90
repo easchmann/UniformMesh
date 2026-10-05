@@ -26,7 +26,7 @@ contains
 
     ! create the mesh on the first call; aborts if the Flash-X setup does not fit the mesh
     subroutine um_init()
-        use Grid_interface, ONLY: Grid_getGlobalIndexLimits
+        use Grid_interface, ONLY: Grid_getGlobalIndexLimits, Grid_getDomainBoundBox
         use RuntimeParameters_interface, ONLY: RuntimeParameters_get
         use Driver_interface, ONLY: Driver_abort
 
@@ -34,6 +34,7 @@ contains
             "xl_boundary_type", "xr_boundary_type", "yl_boundary_type", &
             "yr_boundary_type", "zl_boundary_type", "zr_boundary_type"]
         character(len=MAX_STRING_LENGTH) :: bc
+        real :: bbox(LOW:HIGH, MDIM)
         integer :: nb(MDIM), ierr, i
 
         if (um_ready) return
@@ -58,6 +59,12 @@ contains
         if (ierr /= MESH_OK) then
             call Driver_abort("[UniformMesh] mesh_f_create failed: um_nblock[xyz] must divide the " // &
                               "global cell counts and every block needs >= NGUARD cells per axis")
+        end if
+        ! same physical domain as Flash-X, so the mesh's dx (used by Spark) is Flash-X's dx
+        call Grid_getDomainBoundBox(bbox)
+        call mesh_f_set_domain(um_mesh, bbox(LOW, :), bbox(HIGH, :), ierr)
+        if (ierr /= 0) then
+            call Driver_abort("[UniformMesh] invalid domain bounding box")
         end if
         if (mesh_f_nhalo(um_mesh) /= NGUARD) then
             call Driver_abort("[UniformMesh] MESH_NHALO /= NGUARD, regenerate mesh_config.h (install.sh)")
@@ -92,6 +99,7 @@ contains
         type(Grid_tile_t) :: tileDesc
         real, dimension(:,:,:,:), pointer :: solnData
         real(mesh_rk), dimension(:,:,:,:), pointer :: U
+        real :: gridDel(MDIM), meshDel(MDIM)
         integer :: lim(LOW:HIGH, MDIM), off(MDIM), lo(MDIM), hi(MDIM)
         integer :: b, ntiles
 
@@ -106,6 +114,13 @@ contains
             off = 1 - tileDesc%limits(LOW, :)
             if (any(tileDesc%limits(HIGH, :) + off /= um_gsize)) then
                 call Driver_abort("[UniformMesh] the Grid block is not the whole domain (run on 1 MPI rank)")
+            end if
+
+            ! Spark takes dx from the mesh, so it must be Flash-X's dx
+            call tileDesc%deltas(gridDel)
+            call mesh_f_deltas(um_mesh, meshDel)
+            if (any(abs(meshDel(1:NDIM) - gridDel(1:NDIM)) > 1e-12 * gridDel(1:NDIM))) then
+                call Driver_abort("[UniformMesh] mesh dx differs from the Grid's dx")
             end if
 
             call tileDesc%getDataPtr(solnData, CENTER)

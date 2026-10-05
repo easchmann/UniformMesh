@@ -69,6 +69,21 @@ Mesh *mesh_create(int nx, int ny, int nz, int bx, int by, int bz, int n_var)
     return m;
 }
 
+int mesh_set_domain(Mesh *m, const double low[3], const double high[3])
+{
+    for (int a = 0; a < MESH_NDIM; ++a){
+        if (!(high[a] > low[a])){
+            return -1;
+        }
+    }
+    for (int a = 0; a < 3; ++a){
+        m->low[a] = low[a];
+        m->high[a] = high[a];
+        m->dx[a] = (high[a] - low[a]) / (MESH_N(m, a) * MESH_NB(m, a));
+    }
+    return 0;
+}
+
 void mesh_remove(Mesh *m)
 {
     if (!m){

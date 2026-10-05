@@ -36,7 +36,7 @@ module mesh_f
     public :: mesh_f_create, mesh_f_remove
     public :: mesh_f_ndim, mesh_f_nblocks, mesh_f_nvars, mesh_f_nhalo, mesh_f_layout
     public :: mesh_f_limits, mesh_f_data_ptr
-    public :: mesh_f_deltas, mesh_f_domain, mesh_f_cell_coords
+    public :: mesh_f_set_domain, mesh_f_deltas, mesh_f_domain, mesh_f_cell_coords
     public :: mesh_f_fill_halo, mesh_f_fill_halo_vars
     public :: mesh_f_c_ptr
 
@@ -64,6 +64,13 @@ module mesh_f
             integer(c_int), value :: v0, nv
             integer(c_int) :: ierr
         end function c_mesh_fill_halo_vars
+
+        function c_mesh_set_domain(p, low, high) bind(C, name="mesh_set_domain") result(ierr)
+            import :: c_int, c_double, c_ptr
+            type(c_ptr), value :: p
+            real(c_double), intent(in) :: low(3), high(3)
+            integer(c_int) :: ierr
+        end function c_mesh_set_domain
 
         ! mesh_bind.c
         function c_type_bytes() bind(C, name="mesh_c_type_bytes") result(n)
@@ -226,6 +233,15 @@ contains
             U(limGC(MESH_LOW, 1):, limGC(MESH_LOW, 2):, limGC(MESH_LOW, 3):, 1:) => flat
         end if
     end subroutine mesh_f_data_ptr
+
+    ! set the global domain [low, high] per axis (default [0,1]); dx follows from it.
+    ! ierr = 0, or -1 if high <= low on a used axis (nothing changed)
+    subroutine mesh_f_set_domain(m, low, high, ierr)
+        type(mesh_t), intent(in) :: m
+        real(c_double), intent(in) :: low(3), high(3)
+        integer, intent(out) :: ierr
+        ierr = c_mesh_set_domain(m%p, low, high)
+    end subroutine mesh_f_set_domain
 
     subroutine mesh_f_deltas(m, deltas)
         type(mesh_t), intent(in) :: m

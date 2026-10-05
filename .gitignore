@@ -1,6 +1,9 @@
 # Build outputs
 test_mesh
+test_mesh_f
 *.o
+*.mod
+check.log
 *.bin
 
 # macOS
@@ -9,3 +12,8 @@ test_mesh
 # Generated / examples
 macro_example.ini
 mesh_config.h
+mesh_config.h.tmp
+
+
+flashx/README.md
+.gitignore
