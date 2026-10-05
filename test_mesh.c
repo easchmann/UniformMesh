@@ -231,6 +231,56 @@ static void test_halo(void)
 
 }
 
+/* 5b. mesh_fill_halo_vars fills exactly the requested variables, others keep their halo */
+static void test_halo_vars(void)
+{
+    printf("test_halo_vars\n");
+
+    Mesh *m = create();
+    CHECK(m != NULL);
+    if (!m){
+        return;
+    }
+
+    // invalid ranges are rejected
+    CHECK(mesh_fill_halo_vars(m, -1, 1) == -1);
+    CHECK(mesh_fill_halo_vars(m, 0, -1) == -1);
+    CHECK(mesh_fill_halo_vars(m, 0, NVAR + 1) == -1);
+    CHECK(mesh_fill_halo_vars(m, NVAR - 1, 2) == -1);
+    CHECK(mesh_fill_halo_vars(m, NVAR, 0) == 0); // empty range is fine
+
+    const type_t sentinel = -1;
+    const int v0 = 1, nv = 1; // middle variable only
+    MESH_LOOP_BLOCKS(m, b)
+        for (int v = 0; v < MESH_NVAR(m); ++v){
+            MESH_LOOP_ALL(m, i, j, k)
+                MESH_AT(m, b, v, i, j, k) = sentinel;
+            MESH_LOOP_3D_END
+        }
+    MESH_LOOP_END
+    fill_with_code(m);
+    CHECK(mesh_fill_halo_vars(m, v0, nv) == 0);
+
+    MESH_LOOP_BLOCKS(m, b)
+    for (int v = 0; v < MESH_NVAR(m); ++v){
+        MESH_LOOP_ALL(m, i, j, k)
+            int interior = 0 <= i && i < MESH_N(m, 0) && 0 <= j && j < MESH_N(m, 1) && 0 <= k && k < MESH_N(m, 2);
+            int p1 = wrap(MESH_GIDX(m, b, 0, i), MESH_N(m, 0) * MESH_NB(m, 0));
+            int p2 = wrap(MESH_GIDX(m, b, 1, j), MESH_N(m, 1) * MESH_NB(m, 1));
+            int p3 = wrap(MESH_GIDX(m, b, 2, k), MESH_N(m, 2) * MESH_NB(m, 2));
+            if (interior || (v0 <= v && v < v0 + nv)){
+                CHECK(MESH_AT(m, b, v, i, j, k) == code(v, p1, p2, p3));
+            }
+            else {
+                CHECK(MESH_AT(m, b, v, i, j, k) == sentinel);
+            }
+        MESH_LOOP_3D_END
+    }
+    MESH_LOOP_END
+
+    mesh_remove(m);
+}
+
 /* 6. block id <-> block coordinates is a bijection */
 static void test_blocks(void)
 {
@@ -291,12 +341,28 @@ static void test_centers(void)
                 if (0 <= idx && idx < MESH_N(m, a)){
                     CHECK(MESH_LOW(m, a) < x && x < m->high[a]);
                 }
+                // edges: dx apart, center in the middle, shared exactly with the next cell
+                double xl = MESH_XL(m, b, a, idx);
+                double xr = MESH_XR(m, b, a, idx);
+                CHECK(fabs(xr - xl - MESH_DX(m, a)) < eps);
+                CHECK(fabs(0.5 * (xl + xr) - x) < eps);
+                CHECK(xl < x && x < xr);
+                CHECK(xr == MESH_XL(m, b, a, idx + 1));
+            }
+            // domain boundaries coincide with the outer edges of the first/last block
+            if (MESH_BCOORD(m, b, a) == 0){
+                CHECK(MESH_XL(m, b, a, 0) == MESH_LOW(m, a));
+            }
+            if (MESH_BCOORD(m, b, a) == MESH_NB(m, a) - 1){
+                CHECK(fabs(MESH_XR(m, b, a, MESH_N(m, a) - 1) - m->high[a]) < eps);
             }
             // first interior center of the next block is dx after this block's last one
             if (MESH_BCOORD(m, b, a) + 1 < MESH_NB(m, a)){
                 int c[3] = { MESH_BCOORD(m, b, 0), MESH_BCOORD(m, b, 1), MESH_BCOORD(m, b, 2) };
                 ++c[a];
                 int nb = MESH_BLOCK_ID(m, c[0], c[1], c[2]);
+                // blocks share their boundary edge exactly
+                CHECK(MESH_XR(m, b, a, MESH_N(m, a) - 1) == MESH_XL(m, nb, a, 0));
                 double gap = MESH_X(m, nb, a, 0) - MESH_X(m, b, a, MESH_N(m, a) - 1);
                 CHECK(fabs(gap - MESH_DX(m, a)) < eps);
                 // the high halo of b sits on the interior of its neighbour
@@ -434,6 +500,7 @@ int main(int argc, char **argv)
         test_loops();
         test_get_set();
         test_halo();
+        test_halo_vars();
         test_blocks();
         test_centers();
         test_boxes();

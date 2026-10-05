@@ -22,6 +22,8 @@ Mesh *mesh_create(int nx, int ny, int nz, int bx, int by, int bz, int n_var);
 void mesh_remove(Mesh *m);
 
 void mesh_fill_halo(Mesh *m);
+// fill the halo of variables v0 .. v0+nv-1 only; returns -1 (and fills nothing) for an invalid range
+int mesh_fill_halo_vars(Mesh *m, int v0, int nv);
 
 // analysis/check purpose (e.g. print)
 type_t mesh_get(const Mesh *m, int b, int v, int i, int j, int k);

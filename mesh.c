@@ -90,7 +90,17 @@ static int block_neighbor(const Mesh *m, int b, int a, int dir)
 }
 
 void mesh_fill_halo(Mesh *m)
-{   //for each axis fill the low and high halo strip/box (depending on halo size)
+{
+    mesh_fill_halo_vars(m, 0, MESH_NVAR(m));
+}
+
+int mesh_fill_halo_vars(Mesh *m, int v0, int nv)
+{
+    if (v0 < 0 || nv < 0 || v0 + nv > MESH_NVAR(m)){
+        return -1;
+    }
+
+    //for each axis fill the low and high halo strip/box (depending on halo size)
     // axis a fixed. All blocks finish axis a before axis a+1, so corners are
     // copied from halos the neighbour already filled
     for (int a = 0; a < MESH_NDIM; ++a){
@@ -119,7 +129,7 @@ void mesh_fill_halo(Mesh *m)
                 int shift = (side==0)? N : -N; // distance from halo cell to the interior cell of the neighbour it copies
                 int src = block_neighbor(m, blk, a, (side == 0) ? -1 : 1);
 
-                for (int v= 0; v < MESH_NVAR(m); ++v){
+                for (int v= v0; v < v0 + nv; ++v){
                     MESH_LOOP_3D(low, high, i, j, k)
                         int position[3] = {i, j, k};
                         position[a] += shift;
@@ -129,6 +139,7 @@ void mesh_fill_halo(Mesh *m)
             }
         MESH_LOOP_END
     }
+    return 0;
 }
 
 type_t mesh_get(const Mesh *m, int b, int v, int i, int j, int k){
