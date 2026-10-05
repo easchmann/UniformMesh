@@ -3,7 +3,7 @@
 How Flash-X Fortran code (e.g. Spark's `Hydro.F90`) uses the C mesh.
 This is a thin binding: a Fortran module that mirrors the C API. It does not implement Flash-X's `Grid_interface`; the Spark driver calls the module directly instead of `Grid_*`.
 
-Files: `mesh_f.c` (C side), `mesh_f.F90` (module `mesh_f`), `test_mesh_f.F90` (tests).
+Files: `mesh_bind.c` (C side), `mesh_f.F90` (module `mesh_f`), `test_mesh_f.F90` (tests).
 
 ---
 
@@ -14,7 +14,7 @@ Flash-X (Fortran)        use mesh_f
                              |   1-based IDs, global indices, real(mesh_rk) pointers
 mesh_f.F90  ---------------  |   bind(C) interfaces, layout detection, index shift
                              |   plain C ABI: ints, doubles, pointers
-mesh_f.c / mesh.c  --------  |   uses the MESH_* macros
+mesh_bind.c / mesh.c  -----  |   uses the MESH_* macros
 mesh_config.h               glue: layout, dimension, halo, type
 ```
 
@@ -46,7 +46,7 @@ The Fortran cell index is `MESH_GIDX(m,b,a,idx) + 1`. This is the AMReX-style gl
 
 ## Data layout
 
-The layout is still decided only by `MESH_IDX` in the glue. `mesh_f.c` reports the address of a block's first guard cell and the element strides in `v, i, j, k`. `mesh_f_create` accepts the two orders that a contiguous Fortran array can represent:
+The layout is still decided only by `MESH_IDX` in the glue. `mesh_bind.c` reports the address of a block's first guard cell and the element strides in `v, i, j, k`. `mesh_f_create` accepts the two orders that a contiguous Fortran array can represent:
 
 | C layout | Strides `(v, i, j, k)` | Fortran pointer | Flash-X equivalent |
 |---|---|---|---|

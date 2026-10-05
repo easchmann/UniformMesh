@@ -1,0 +1,120 @@
+!> @copyright Copyright 2023 UChicago Argonne, LLC and contributors
+!!
+!! @licenseblock
+!!   Licensed under the Apache License, Version 2.0 (the "License");
+!!   you may not use this file except in compliance with the License.
+!!
+!!   Unless required by applicable law or agreed to in writing, software
+!!   distributed under the License is distributed on an "AS IS" BASIS,
+!!   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+!!   See the License for the specific language governing permissions and
+!!   limitations under the License.
+!! @endlicenseblock
+!!
+!! @file
+!! Spark Hydro driver running on the UniformMesh. Modified from Spark/Hydro.F90-mc:
+!! instead of iterating over Grid tiles, it copies the solution into the UniformMesh,
+!! fills the mesh halo once (periodic) and runs Hydro_prepBlock / Hydro_advance on every
+!! mesh block, then copies the result back.
+!! Supports: telescoping, Cartesian geometry, no flux correction, UG Grid on one MPI rank.
+!!
+!! NOVARIANTS keeps setup from deleting the generated Hydro.F90 (this sub-unit has no variants)
+!!NOVARIANTS
+
+subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
+
+   use Timers_interface, ONLY: Timers_start, Timers_stop
+   use IO_interface, ONLY: IO_setScalar
+   use Driver_interface, ONLY: Driver_abort
+   use Hydro_interface, ONLY: Hydro_prepBlock, Hydro_advance
+   use Hydro_data, ONLY: hy_useHydro, hy_telescoping, hy_fluxCorrect, hy_geometry, &
+                         hy_lChyp, hy_C_hyp, hy_globalComm
+   use Hydro_data, ONLY: @M hy_scratch_arrays_list
+   use mesh_f, ONLY: mesh_f_nblocks, mesh_f_limits, mesh_f_data_ptr, mesh_f_deltas, mesh_f_fill_halo
+   use um_flashx, ONLY: um_mesh, um_init, um_copyIn, um_copyOut
+
+#include "Simulation.h"
+#include "constants.h"
+#include "Spark.h"
+#include "Flashx_mpi_implicitNone.fh"
+
+   real, intent(IN) :: timeEndAdv, dt, dtOld
+   integer, optional, intent(IN) :: sweepOrder
+
+   integer, dimension(LOW:HIGH, MDIM) :: blkLimits, blkLimitsGC
+   integer, dimension(MDIM) :: lo, loGC
+   real, dimension(MDIM) :: deltas
+   real, dimension(:,:,:,:), pointer :: Uin
+   @M hy_scratch_ptr_declare
+   @M hy_bounds_declare
+   integer :: blockID, stage, ng, dir, error
+
+   if (.NOT. hy_useHydro) return
+
+   call Timers_start("Hydro")
+
+   call um_init()
+   if (.NOT. hy_telescoping) call Driver_abort("[Hydro UniformMesh] only telescoping Spark is supported")
+   if (hy_geometry /= CARTESIAN) call Driver_abort("[Hydro UniformMesh] only Cartesian geometry is supported")
+   if (hy_fluxCorrect) call Driver_abort("[Hydro UniformMesh] flux correction is not supported")
+
+#ifdef SPARK_GLM
+   call MPI_AllReduce(hy_lChyp, hy_C_hyp, 1, &
+                      FLASH_REAL, MPI_MAX, hy_globalComm, error)
+   call IO_setScalar("C_hyp", hy_lChyp)
+#endif
+
+   ! Flash-X Grid -> mesh, then one halo fill for all RK stages (telescoping).
+   ! This replaces Grid_fillGuardCells(doEos=.TRUE.): periodic guard cells are copies of
+   ! interior cells, which are already EOS-consistent.
+   call um_copyIn()
+   call mesh_f_fill_halo(um_mesh)
+   call mesh_f_deltas(um_mesh, deltas)
+
+   stage = 1
+   nullify(Uin)
+   do blockID = 1, mesh_f_nblocks(um_mesh)
+      ! limits are global 1-based indices; Spark only needs them to be consistent
+      call mesh_f_limits(um_mesh, blockID, blkLimits, blkLimitsGC)
+      call mesh_f_data_ptr(um_mesh, blockID, Uin)
+      lo(:) = blkLimits(LOW, :)
+      loGC(:) = blkLimitsGC(LOW, :)
+
+      @M hy_map_scr_ptrs
+
+      @M hy_setLimits
+
+      call Timers_start("computations")
+      call Hydro_prepBlock(Uin, blkLimits, blkLimitsGC, deltas, &
+                           hy_Vc, hy_starState, hy_tmpState, &
+                           hy_xCenter, hy_yCenter, hy_zCenter, &
+                           hy_xLeft, hy_xRight, hy_yLeft, hy_yRight, &
+                           hy_fareaX, hy_fareaY, hy_fareaZ, hy_cvol, &
+                           stage, lo, loGC)
+
+      call Hydro_advance(stage, Uin, dt, dtOld, &
+                         hy_starState, hy_tmpState, &
+                         hy_flx, hy_fly, hy_flz, &
+                         hy_fluxBufX, hy_fluxBufY, hy_fluxBufZ, &
+                         hy_grav, hy_flat3d, &
+                         hy_rope, hy_flux, hy_uPlus, hy_uMinus, &
+                         deltas, &
+                         blkLimits, blkLimitsGC, &
+                         lo, loGC, &
+                         hy_xCenter, hy_yCenter, hy_zCenter, &
+                         hy_xLeft, hy_xRight, hy_yLeft, hy_yRight, &
+                         hy_fareaX, hy_fareaY, hy_fareaZ, hy_cvol)
+      call Timers_stop("computations")
+
+      @M hy_release_scr_ptrs
+      nullify(Uin)
+   end do
+
+   ! mesh -> Flash-X Grid (interior), for IO, the timestep and the other units
+   call um_copyOut()
+
+   hy_lChyp = TINY(1.0)
+
+   call Timers_stop("Hydro")
+
+end subroutine Hydro

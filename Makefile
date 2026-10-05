@@ -36,11 +36,11 @@ mesh_config.h: FORCE
 mesh.o: mesh.c mesh.h mesh_config.h
 	$(CC) $(CFLAGS) -c mesh.c -o $@
 
-mesh_f.o: mesh_f.c mesh.h mesh_config.h
-	$(CC) $(CFLAGS) -c mesh_f.c -o $@
+mesh_bind.o: mesh_bind.c mesh.h mesh_config.h
+	$(CC) $(CFLAGS) -c mesh_bind.c -o $@
 
-mesh_f_mod.o mesh_f.mod: mesh_f.F90 mesh_config.h
-	$(FC) $(FFLAGS) -c mesh_f.F90 -o mesh_f_mod.o
+mesh_f.o mesh_f.mod: mesh_f.F90 mesh_config.h
+	$(FC) $(FFLAGS) -c mesh_f.F90 -o mesh_f.o
 
 test_mesh_f.o: test_mesh_f.F90 mesh_f.mod mesh_config.h
 	$(FC) $(FFLAGS) $(FDEFS) -c test_mesh_f.F90 -o $@
@@ -48,7 +48,7 @@ test_mesh_f.o: test_mesh_f.F90 mesh_f.mod mesh_config.h
 test_mesh: mesh.o test_mesh.c
 	$(CC) $(CFLAGS) mesh.o test_mesh.c -lm -o $@
 
-test_mesh_f: mesh.o mesh_f.o mesh_f_mod.o test_mesh_f.o
+test_mesh_f: mesh.o mesh_bind.o mesh_f.o test_mesh_f.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 check: test_mesh test_mesh_f

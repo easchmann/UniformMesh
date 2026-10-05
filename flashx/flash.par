@@ -1,0 +1,56 @@
+#  Isentropic vortex with Spark on the UniformMesh (UG Grid, 1 MPI rank, periodic)
+#  Based on Simulation/SimulationMain/IsentropicVortex/flash.par.
+#  The vortex is advected diagonally and is back at the center at t = 10.
+
+#               UniformMesh
+um_nblockx      = 4      # must divide the global cell count (nxb), blocks need >= NGUARD cells
+um_nblocky      = 4
+
+#               simulation parameters
+basenm          = "isentropic_vortex_"
+log_file        = "isentropic_vortex.log"
+restart         = .false.
+checkpointFileIntervalTime = 0.0
+checkpointFileIntervalStep = 100
+checkpointFileNumber = 0
+
+nend            = 400
+tmax            = 10.
+
+cfl             = .8
+dtmin           = 2.5e-02
+dtmax           = 2.5e-02
+dtinit          = 2.5e-02
+
+#               problem parameters
+gamma           = 1.4
+rho_ambient     = 1.0
+p_ambient       = 1.0
+u_ambient       = 1.0
+v_ambient       = 1.0
+
+vortex_strength = 5.0
+xctr            = 5.0
+yctr            = 5.0
+
+xmin            = 0.0
+xmax            = 10.0
+ymin            = 0.0
+ymax            = 10.0
+
+nx_subint       = 1
+ny_subint       = 1
+
+geometry        = "cartesian"
+
+xl_boundary_type = "periodic"
+xr_boundary_type = "periodic"
+yl_boundary_type = "periodic"
+yr_boundary_type = "periodic"
+
+smlrho          = 1.e-100
+smallp          = 1.e-100
+smalle          = 1.e-100
+smallt          = 1.e-100
+
+plot_var_1      = "dens"

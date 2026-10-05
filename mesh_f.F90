@@ -1,4 +1,4 @@
-! Fortran bindings for the uniform mesh (thin layer over mesh.c / mesh_f.c, see BINDINGS.md).
+! Fortran bindings for the uniform mesh (thin layer over mesh.c / mesh_bind.c, see BINDINGS.md).
 !
 ! Conventions (Flash-X style):
 !   - block IDs, variables and axes are 1-based
@@ -65,7 +65,7 @@ module mesh_f
             integer(c_int) :: ierr
         end function c_mesh_fill_halo_vars
 
-        ! mesh_f.c
+        ! mesh_bind.c
         function c_type_bytes() bind(C, name="mesh_c_type_bytes") result(n)
             import :: c_int
             integer(c_int) :: n
