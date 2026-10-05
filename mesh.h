@@ -7,25 +7,28 @@
 typedef MESH_TYPE type_t; // type name physics uses
 
 typedef struct {
-    int n[3], n_h[3], n_t[3];
+    int n[3], n_h[3], n_t[3]; // per block (all blocks have the same size)
+    int nb[3]; // blocks per axis
+    int n_block;
     int n_var;
-    size_t n_cell;
-    double low[3], high[3], dx[3];
+    size_t n_cell; // cells per block incl. halo
+    double low[3], high[3], dx[3]; // global domain
     type_t *data;
 } Mesh;
 
 // declarations
-Mesh *mesh_create(int nx, int ny, int nz, int n_var);
+// nx, ny, nz: global interior cells, bx, by, bz: blocks per axis (must divide n)
+Mesh *mesh_create(int nx, int ny, int nz, int bx, int by, int bz, int n_var);
 void mesh_remove(Mesh *m);
 
 void mesh_fill_halo(Mesh *m);
 
 // analysis/check purpose (e.g. print)
-type_t mesh_get(const Mesh *m, int v, int i, int j, int k);
-void mesh_set(Mesh *m, int v, int i, int j, int k, type_t x);
+type_t mesh_get(const Mesh *m, int b, int v, int i, int j, int k);
+void mesh_set(Mesh *m, int b, int v, int i, int j, int k, type_t x);
 
 // I/O
-void mesh_print(const Mesh *m, int v, int k); //text
+void mesh_print(const Mesh *m, int b, int v, int k); //text
 int mesh_write(const Mesh *m, const char *path); //write to a binary file
 
 #endif

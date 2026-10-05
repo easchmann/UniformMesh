@@ -14,9 +14,12 @@ I use this in every macro with the same meaning:
 
 | Arg | Meaning |
 |---|---|
-| `m` | mesh handle (`Mesh *`). Not hardcoded, so several blocks can exist at once |
+| `m` | mesh handle (`Mesh *`). Not hardcoded, so several meshes can exist at once |
+| `b` | block id, `0 <= b < MESH_NBLOCK(m)` |
 | `v` | logical variable id, `0 <= v < n_var` |
-| `i, j, k` | logical cell index per axis |
+| `i, j, k` | logical cell index per axis, local to block `b` |
+| `bi, bj, bk` | block coordinate per axis, `0 <= bi < MESH_NB(m,0)` |
+| `idx` | a single logical cell index on one axis |
 | `low, high` | index bounds |
 | `p` | a pointer value |
 | `n_bytes` | size in bytes (`size_t`) |
@@ -28,6 +31,13 @@ I use this in every macro with the same meaning:
 - For an unused axis a >= MESH_NDIM: `N(a) = 1`, `H(a) = 0` whcih means the index is always 0.
 - Physics should only use logical indices and not arithmetic/offsets
 
+### Blocks
+The global domain (`MESH_N(m,a) * MESH_NB(m,a)` interior cells on axis a) is tiled by
+`MESH_NB(m,0) x MESH_NB(m,1) x MESH_NB(m,2)` blocks of equal size (the global count must be divisible by the block count).
+- Every block has the same local index space as above (`MESH_N`, `MESH_NH` are per block).
+- A halo cell of block b holds the value of the interior cell of the neighbouring block; at the global boundary the neighbour wraps around (periodic). With one block this reduces to the single-block periodic case.
+- Block id <-> block coordinates goes only through `MESH_BLOCK_ID` / `MESH_BCOORD`, so the glue owns the block ordering.
+
 ### Mesh representation
 We don't want to fix the mesh representation, i.e. how the mesh stores its sizes or data. 
 everything reads them thorugh the accessor macros below.
@@ -37,12 +47,14 @@ Representation:
 
 | What | Accessor|
 |---|---|
-| interior cells per axis | MESH_N(m, a) |
+| interior cells per axis (per block) | MESH_N(m, a) |
 | halo cells on each side per axis | MESH_NH(m, a) |
 | total cells per axis = interior + 2*halo | MESH_NT(m, a) |
 | number of variables | MESH_NVAR(m) |
-| number of cells | MESH_NCELL(m) | 
-| number of blocks | MESH_NBLOCK(m) |
+| number of cells per block | MESH_NCELL(m) |
+| blocks per axis | MESH_NB(m, a) |
+| number of blocks | MESH_NBLOCK(m) |
+| global low corner / cell width per axis | MESH_LOW(m, a), MESH_DX(m, a) |
 | pointer to the storage | MESH_DATA(m) |
 
 ### Rules for macro body
@@ -91,7 +103,7 @@ Representation:
 
 ### MESH_NCELL(m) 
 - **Kind:** expression (`size_t`)
-- **Meaning:** total number of cells, including halo cells.
+- **Meaning:** number of cells of one block, including halo cells.
 - **Properties:** `== MESH_NT(m,0) * MESH_NT(m,1) * MESH_NT(m,2)`.
 - **Open:** stored field or computed from `MESH_NT`? Storing would save two multiplications for each `MESH_IDX` in a structure of arrays
 - **Implementation**:
@@ -106,6 +118,36 @@ Representation:
   definition = ((size_t)MESH_NT(m,0) * (size_t)MESH_NT(m,1) * (size_t)MESH_NT(m,2))
   ```
 
+### MESH_NB(m, a), MESH_NBLOCK(m)
+- **Kind:** expression (`int`)
+- **Meaning:** number of blocks on axis `a` (1 for unused axes) and in total.
+- **Properties:** `MESH_NBLOCK(m) == MESH_NB(m,0) * MESH_NB(m,1) * MESH_NB(m,2)`.
+- **Implementation**:
+  ```ini
+  [MESH_NB]
+  args = m,a
+  definition = ((m)->nb[a])
+
+  [MESH_NBLOCK]
+  args = m
+  definition = ((m)->n_block)
+  ```
+
+### MESH_BLOCK_ID(m, bi, bj, bk), MESH_BCOORD(m, b, a)
+- **Kind:** expression (`int`)
+- **Meaning:** block id of block coordinate `(bi,bj,bk)`, and the inverse: coordinate of block `b` on axis `a`.
+- **Check:** bijection, `MESH_BCOORD(m, MESH_BLOCK_ID(m,bi,bj,bk), 0) == bi` etc.
+- **Implementation** (x fastest):
+  ```ini
+  [MESH_BLOCK_ID]
+  args = m,bi,bj,bk
+  definition = ((bi) + MESH_NB(m,0) * ((bj) + MESH_NB(m,1) * (bk)))
+
+  [MESH_BCOORD]
+  args = m,b,a
+  definition = (((b) / ((a) == 0 ? 1 : (a) == 1 ? MESH_NB(m,0) : MESH_NB(m,0) * MESH_NB(m,1))) % MESH_NB(m,a))
+  ```
+
 ### MESH_DATA(m)
 - **Kind:** expression (`MESH_TYPE *`)
 - **Meaning:** base pointer of the storage that `MESH_IDX` offsets into.
@@ -114,6 +156,45 @@ Representation:
   [MESH_DATA]
   args = m
   definition = ((m)->data)
+  ```
+
+---
+
+## Geometry
+
+### MESH_LOW(m, a), MESH_DX(m, a)
+- **Kind:** expression (`double`)
+- **Meaning:** low corner of the global domain and the (uniform) cell width on axis `a`.
+- **Implementation**:
+  ```ini
+  [MESH_LOW]
+  args = m,a
+  definition = ((m)->low[a])
+
+  [MESH_DX]
+  args = m,a
+  definition = ((m)->dx[a])
+  ```
+
+### MESH_GIDX(m, b, a, idx)
+- **Kind:** expression (`int`)
+- **Meaning:** global cell index on axis `a` of local index `idx` in block `b`. Not wrapped, so halo cells at the global boundary give `-1`, `N_global`, etc.
+- **Implementation**:
+  ```ini
+  [MESH_GIDX]
+  args = m,b,a,idx
+  definition = (MESH_BCOORD(m,b,a) * MESH_N(m,a) + (idx))
+  ```
+
+### MESH_X(m, b, a, idx)
+- **Kind:** expression (`double`)
+- **Meaning:** coordinate on axis `a` of the cell center (where the variables sit) of local index `idx` in block `b`. Computed, not stored. Valid for halo indices too (gives the unwrapped position outside the block).
+- **Properties:** centers are `MESH_DX` apart, also across block boundaries. The high halo center of a block equals the first interior center of its neighbour.
+- **Implementation**:
+  ```ini
+  [MESH_X]
+  args = m,b,a,idx
+  definition = (MESH_LOW(m,a) + (MESH_GIDX(m,b,a,idx) + 0.5) * MESH_DX(m,a))
   ```
 
 ---
@@ -202,42 +283,53 @@ Representation:
     + (size_t)MESH_NT(m,1) *   (size_t)((k) + MESH_NH(m,2)) ) )
   ```
 
-### MESH_IDX(m, v, i, j, k)
+### MESH_IDX(m, b, v, i, j, k)
 - **Kind:** expression (`size_t`)
-- **Meaning:** offset into `MESH_DATA(m)` of variable `v` in cell `(i,j,k)`.
+- **Meaning:** offset into `MESH_DATA(m)` of variable `v` in cell `(i,j,k)` of block `b`.
   **This macro is the layout.** Physics never calls it directly; it goes through
   `MESH_AT`.
 
 - **Implementation:**
   ```ini
-  ; structure of arrays
+  ; structure of arrays: block outermost, then variable, then cell
   [MESH_IDX]
-  args = m,v,i,j,k
-  definition = ((size_t)(v) * MESH_NCELL(m) + MESH_CELL(m,i,j,k))
+  args = m,b,v,i,j,k
+  definition = (((size_t)(b) * (size_t)MESH_NVAR(m) + (size_t)(v)) * MESH_NCELL(m) + MESH_CELL(m,i,j,k))
   ```
   ```ini
-  ; array of structures: all vars of cell 0, then cell 1 etc
+  ; array of structures: block outermost, then all vars of cell 0, then cell 1 etc
   [MESH_IDX]
-  args = m,v,i,j,k
-  definition = (MESH_CELL(m,i,j,k) * (size_t)MESH_NVAR(m) + (size_t)(v))
+  args = m,b,v,i,j,k
+  definition = (((size_t)(b) * MESH_NCELL(m) + MESH_CELL(m,i,j,k)) * (size_t)MESH_NVAR(m) + (size_t)(v))
   ```
+- **Open:** both keep each block contiguous (handy for MPI later). Block-innermost orderings are possible, but then a block is no longer contiguous.
 
 ---
 
 ## Access
 
-### MESH_AT(m, v, i, j, k)  
-- **Meaning:** the value of variable `v` in cell `(i,j,k)`.
+### MESH_AT(m, b, v, i, j, k)  
+- **Meaning:** the value of variable `v` in cell `(i,j,k)` of block `b`.
 - **IMplementation*:**
   ```ini
   [MESH_AT]
-  args = m,v,i,j,k
-  definition = (MESH_DATA(m)[MESH_IDX(m,v,i,j,k)])
+  args = m,b,v,i,j,k
+  definition = (MESH_DATA(m)[MESH_IDX(m,b,v,i,j,k)])
   ```
 
 ---
 
 ## Loops
+
+### MESH_LOOP_BLOCKS(m, b)
+- **Kind:** statement-opening, closed by `MESH_LOOP_END`
+- **Meaning:** iterate over all blocks of `m`. Cell loops go inside.
+- **Implementation:**
+  ```ini
+  [MESH_LOOP_BLOCKS]
+  args = m,b
+  definition = for (int b = 0; b < MESH_NBLOCK(m); ++b){
+  ```
 
 ### MESH_LOOP_INTERIOR(m, i, j, k)
 - **Kind:** statement-opening
@@ -330,7 +422,7 @@ Functions in `mesh.c`, written in terms of the macros above.
 
 | Function | Purpose |
 |---|---|
-| `mesh_create`, `mesh_remove` | create and remove a mesh |
-| `mesh_fill_halo(m)`, `mesh_fill_halo_vars(m, v0, nv)` | periodic wraparound halo fill (exposed to physics) |
+| `mesh_create(nx, ny, nz, bx, by, bz, n_var)`, `mesh_remove` | create and remove a mesh; `n*` global cells, `b*` blocks per axis |
+| `mesh_fill_halo(m)`, `mesh_fill_halo_vars(m, v0, nv)` | halo fill from neighbouring blocks, periodic at the global boundary (exposed to physics) |
 | `mesh_write`, `mesh_read` | I/O |
 
