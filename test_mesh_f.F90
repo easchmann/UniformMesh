@@ -91,6 +91,7 @@ program test_mesh_f
 
     type(mesh_t) :: m
     real(mesh_rk), pointer :: U(:, :, :, :)
+    real(mesh_rk), pointer :: U5(:, :, :, :, :)
     real(mesh_rk), allocatable :: out(:, :, :)
     real(c_double), allocatable :: xc(:), xl(:), xr(:)
     real(c_double) :: deltas(3), low(3), high(3), x
@@ -143,6 +144,27 @@ program test_mesh_f
     end do
     call check(all(cover == 1), "blocks cover the domain exactly once")
 
+    ! --- whole-mesh field pointer: U(v,i,j,k,b) aliases mesh_f_data_ptr(m,b)
+    ! AoS only (mesh_f_field_ptr is the AoS whole-mesh view; SoA has no such pointer).
+    ! The pointer is block-local: every block's interior low is at coordinate 1 on
+    ! each used axis, so block b's first interior cell == U5(v,1,1,1,b).
+    if (EXPECTED_LAYOUT == MESH_LAYOUT_AOS) then
+        write(*, '(a)') "test_field_ptr"
+        call mesh_f_field_ptr(m, U5)
+        call mesh_f_limits(m, 1, lim, limGC)
+        call check(all(lbound(U5) == [1, limGC(MESH_LOW, :), 1]), "field_ptr lbound")
+        call check(all(ubound(U5) == [NVAR, limGC(MESH_HIGH, :), mesh_f_nblocks(m)]), "field_ptr ubound")
+        do b = 1, mesh_f_nblocks(m)
+            call mesh_f_limits(m, b, lim, limGC)
+            call mesh_f_data_ptr(m, b, U)
+            ! write through the per-block view (global coords of block b's first interior cell)
+            U(1, lim(1, 1), lim(1, 2), lim(1, 3)) = -1
+            ! read through the whole-mesh view at the same block-local coordinate
+            call check(U5(1, 1, 1, 1, b) == -1, "field_ptr aliases block storage")
+            U5(1, 1, 1, 1, b) = 0
+        end do
+    end if
+
     ! --- data pointer: bounds, and Fortran writes are what C reads
     write(*, '(a)') "test_data_ptr"
     do b = 1, mesh_f_nblocks(m)
@@ -194,6 +216,18 @@ program test_mesh_f
     call check(ierr == 0, "fill var 2")
     call check_halo(2, 1)
 
+    ! --- block neighbor: periodic; low neighbor is reached again via high neighbor
+    write(*, '(a)') "test_neighbor"
+    do b = 1, mesh_f_nblocks(m)
+        do a = 1, 3
+            call check(mesh_f_neighbor(m, mesh_f_neighbor(m, b, a, -1), a, +1) == b, "neighbor round trip")
+            if (a <= ndim) then
+                ! along a used axis the two neighbors are distinct blocks (it is periodic)
+                call check(mesh_f_neighbor(m, b, a, -1) /= b, "low neighbor not self")
+            end if
+        end do
+    end do
+
     ! --- geometry
     write(*, '(a)') "test_coords"
     ! non-unit domain, so dx and positions are not just 1/N
@@ -238,7 +272,7 @@ program test_mesh_f
             out = 0
             call neighbour_sum(U, lim, loGC, g, ndim, out)
             do k = lim(1, 3) - merge(g, 0, ndim > 2), lim(2, 3) + merge(g, 0, ndim > 2)
-            do j = lim(1, 2) - g, lim(2, 2) + g
+            do j = lim(1, 2) - merge(g, 0, ndim > 1), lim(2, 2) + merge(g, 0, ndim > 1)
             do i = lim(1, 1) - g, lim(2, 1) + g
                 x = expected_sum(i, j, k)
                 call check(out(i, j, k) == x, "neighbour sum")

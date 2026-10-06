@@ -27,6 +27,9 @@ void mesh_fill_halo(Mesh *m);
 // fill the halo of variables v0 .. v0+nv-1 only; returns -1 (and fills nothing) for an invalid range
 int mesh_fill_halo_vars(Mesh *m, int v0, int nv);
 
+// id of the block next to b along axis a (dir = -1 low, +1 high), periodic
+int mesh_block_neighbor(const Mesh *m, int b, int a, int dir);
+
 // analysis/check purpose (e.g. print)
 type_t mesh_get(const Mesh *m, int b, int v, int i, int j, int k);
 void mesh_set(Mesh *m, int b, int v, int i, int j, int k, type_t x);

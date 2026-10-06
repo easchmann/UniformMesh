@@ -35,7 +35,8 @@ module mesh_f
 
     public :: mesh_f_create, mesh_f_remove
     public :: mesh_f_ndim, mesh_f_nblocks, mesh_f_nvars, mesh_f_nhalo, mesh_f_layout
-    public :: mesh_f_limits, mesh_f_data_ptr
+    public :: mesh_f_limits, mesh_f_data_ptr, mesh_f_field_ptr
+    public :: mesh_f_neighbor
     public :: mesh_f_set_domain, mesh_f_deltas, mesh_f_domain, mesh_f_cell_coords
     public :: mesh_f_fill_halo, mesh_f_fill_halo_vars
     public :: mesh_f_write_dump
@@ -117,6 +118,13 @@ module mesh_f
             integer(c_int), value :: b, a, edge
             real(c_double) :: x(*)
         end subroutine c_coords
+
+        function c_mesh_block_neighbor(p, b, a, dir) bind(C, name="mesh_c_block_neighbor") result(n)
+            import :: c_int, c_ptr
+            type(c_ptr), value :: p
+            integer(c_int), value :: b, a, dir
+            integer(c_int) :: n
+        end function c_mesh_block_neighbor
     end interface
 
 contains
@@ -234,6 +242,34 @@ contains
             U(limGC(MESH_LOW, 1):, limGC(MESH_LOW, 2):, limGC(MESH_LOW, 3):, 1:) => flat
         end if
     end subroutine mesh_f_data_ptr
+
+    ! AoS only: Fortran pointer to all blocks of the whole mesh at once, so a solver
+    ! can view it as a single array U(var, 1-nh1:, 1-nh2:, 1-nh3:, block) with block-local
+    ! halo lower bounds. This is the layout NewImpl's block-loop kernels index directly.
+    subroutine mesh_f_field_ptr(m, U)
+        type(mesh_t), intent(in) :: m
+        real(mesh_rk), pointer, intent(out) :: U(:, :, :, :, :)
+        real(mesh_rk), pointer :: flat(:, :, :, :, :)
+        type(c_ptr) :: base
+        integer(c_int64_t) :: s(4)
+        integer :: lim(MESH_LOW:MESH_HIGH, 3), limGC(MESH_LOW:MESH_HIGH, 3), nt(3)
+
+        if (m%layout /= MESH_LAYOUT_AOS) error stop "mesh_f_field_ptr: AoS layout required"
+        call c_block_layout(m%p, 0_c_int, base, s)
+        call mesh_f_limits(m, 1, lim, limGC)
+        nt = limGC(MESH_HIGH, :) - limGC(MESH_LOW, :) + 1
+        call c_f_pointer(base, flat, [int(m%nvar), nt(1), nt(2), nt(3), m%nblock])
+        U(1:, limGC(MESH_LOW, 1):, limGC(MESH_LOW, 2):, limGC(MESH_LOW, 3):, 1:) => flat
+    end subroutine mesh_f_field_ptr
+
+    ! neighbor block of blockID along axis (1..3) in direction dir (-1 low, +1 high);
+    ! the periodic block-neighbor logic lives in mesh.c (mesh_block_neighbor)
+    integer function mesh_f_neighbor(m, blockID, axis, dir)
+        type(mesh_t), intent(in) :: m
+        integer, intent(in) :: blockID, axis, dir
+        mesh_f_neighbor = int(c_mesh_block_neighbor(m%p, int(blockID, c_int), &
+                                                    int(axis - 1, c_int), int(dir, c_int)), kind(blockID))
+    end function mesh_f_neighbor
 
     ! set the global domain [low, high] per axis (default [0,1]); dx follows from it.
     ! ierr = 0, or -1 if high <= low on a used axis (nothing changed)

@@ -71,3 +71,10 @@ void mesh_c_coords(const Mesh *m, int b, int a, int edge, double *x)
                     : MESH_X(m, b, a, idx);
     }
 }
+
+// 1-based block and 1-based direction (-1/+1) from the Fortran side; axis is 0-based
+// like every other mesh_bind.c function. Returns the caller's convention: 1-based block id.
+int mesh_c_block_neighbor(const Mesh *m, int b, int a, int dir)
+{
+    return mesh_block_neighbor(m, b - 1, a, dir) + 1;
+}

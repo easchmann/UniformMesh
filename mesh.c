@@ -94,7 +94,7 @@ void mesh_remove(Mesh *m)
 }
 
 // id of the block next to b along axis a (dir = -1 low, +1 high), periodic
-static int block_neighbor(const Mesh *m, int b, int a, int dir)
+int mesh_block_neighbor(const Mesh *m, int b, int a, int dir)
 {
     int c[3];
     for (int x = 0; x < 3; ++x){
@@ -142,7 +142,7 @@ int mesh_fill_halo_vars(Mesh *m, int v0, int nv)
                 low[a] = (side == 0) ? -NH : N;
                 high[a] = (side == 0) ? -1 : N+NH-1;
                 int shift = (side==0)? N : -N; // distance from halo cell to the interior cell of the neighbour it copies
-                int src = block_neighbor(m, blk, a, (side == 0) ? -1 : 1);
+                int src = mesh_block_neighbor(m, blk, a, (side == 0) ? -1 : 1);
 
                 for (int v= v0; v < v0 + nv; ++v){
                     MESH_LOOP_3D(low, high, i, j, k)
