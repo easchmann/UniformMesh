@@ -84,6 +84,7 @@ Flash-X compiles with `real` promoted to 8 bytes, so `real` and `real(mesh_rk)` 
 | `mesh_f_cell_coords(m, blockID, axis, edge, coords)` | centers / edges of all cells of the block incl. halo, like `Grid_getCellCoords` |
 | `mesh_f_fill_halo(m)` | periodic halo fill, all variables |
 | `mesh_f_fill_halo_vars(m, var_first, nvars, ierr)` | halo fill of a variable range (1-based) |
+| `mesh_f_write_dump(m, filename, names, step, time, ierr)` | binary dump of all blocks incl. halo (format in `mesh_f.F90`), plotted by `flashx/plot_mesh.py` |
 | `mesh_f_c_ptr(m)` | raw C handle for calling other C functions |
 
 ---

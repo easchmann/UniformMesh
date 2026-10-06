@@ -12,3 +12,6 @@ PARAMETER um_nblocky INTEGER 1
 
 D um_nblockz number of UniformMesh blocks along z
 PARAMETER um_nblockz INTEGER 1
+
+D um_dumpInterval write the mesh (all blocks incl. halo) to um_dump_<step>.bin at the start and every N steps; 0 = off
+PARAMETER um_dumpInterval INTEGER 0

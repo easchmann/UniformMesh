@@ -7,6 +7,9 @@
 !! Requirements, checked in um_init / um_copy:
 !!   UG Grid on one MPI rank, periodic boundaries on all used axes, NDIM and NGUARD equal
 !!   to MESH_NDIM and MESH_NHALO of mesh_config.h, AoS layout (Flash-X without -index-reorder).
+!!
+!! With um_dumpInterval = N > 0, um_dump writes the mesh (all blocks incl. halo, all variables)
+!! to um_dump_<step>.bin at the start and every N steps, for flashx/plot_mesh.py.
 
 #include "Simulation.h"
 #include "constants.h"
@@ -19,8 +22,10 @@ module um_flashx
     type(mesh_t), save, public :: um_mesh
     logical, save :: um_ready = .false.
     integer, save :: um_gsize(MDIM)   ! global interior cells per axis
+    integer, save :: um_dumpInterval = 0
+    integer, save :: um_nSteps = 0    ! Hydro calls so far
 
-    public :: um_init, um_copyIn, um_copyOut
+    public :: um_init, um_copyIn, um_copyOut, um_output
 
 contains
 
@@ -53,6 +58,7 @@ contains
         call RuntimeParameters_get("um_nblockx", nb(IAXIS))
         call RuntimeParameters_get("um_nblocky", nb(JAXIS))
         call RuntimeParameters_get("um_nblockz", nb(KAXIS))
+        call RuntimeParameters_get("um_dumpInterval", um_dumpInterval)
 
         call mesh_f_create(um_mesh, um_gsize(IAXIS), um_gsize(JAXIS), um_gsize(KAXIS), &
                            nb(IAXIS), nb(JAXIS), nb(KAXIS), NUNK_VARS, ierr)
@@ -77,6 +83,48 @@ contains
             ", blocks", nb, ", halo", mesh_f_nhalo(um_mesh)
         um_ready = .true.
     end subroutine um_init
+
+    ! called by Hydro before (afterStep = .false.) and after (.true.) each step;
+    ! writes a dump at the start and every um_dumpInterval steps
+    subroutine um_output(time, afterStep)
+        real, intent(in) :: time
+        logical, intent(in) :: afterStep
+
+        if (um_dumpInterval <= 0) return
+        if (.not. afterStep) then
+            if (um_nSteps == 0) call um_dump(0, time)     ! initial state, halo already filled
+        else
+            um_nSteps = um_nSteps + 1
+            if (mod(um_nSteps, um_dumpInterval) == 0) then
+                call mesh_f_fill_halo(um_mesh)            ! so the dumped halo matches the interior
+                call um_dump(um_nSteps, time)
+            end if
+        end if
+    end subroutine um_output
+
+    ! dump of the mesh (format: mesh_f_write_dump in mesh_f.F90) with Flash-X's variable names
+    subroutine um_dump(step, time)
+        use iso_c_binding, ONLY: c_double
+        use Simulation_interface, ONLY: Simulation_mapIntToStr
+        use Driver_interface, ONLY: Driver_abort
+
+        integer, intent(in) :: step
+        real, intent(in) :: time
+        character(len=8) :: names(NUNK_VARS)
+        character(len=MAX_STRING_LENGTH) :: name
+        character(len=32) :: fname
+        integer :: v, ierr
+
+        do v = 1, NUNK_VARS
+            name = ""
+            call Simulation_mapIntToStr(v, name, MAPBLOCK_UNK)
+            names(v) = name
+        end do
+        write(fname, '(a,i6.6,a)') "um_dump_", step, ".bin"
+        call mesh_f_write_dump(um_mesh, trim(fname), names, step, real(time, c_double), ierr)
+        if (ierr /= 0) call Driver_abort("[UniformMesh] could not write " // trim(fname))
+        write(*, '(a,a,a,es12.5)') " [UniformMesh] wrote ", trim(fname), ", t =", time
+    end subroutine um_dump
 
     ! Flash-X Grid -> mesh, interior cells of all variables
     subroutine um_copyIn()

@@ -31,7 +31,7 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
                          hy_lChyp, hy_C_hyp, hy_globalComm
    use Hydro_data, ONLY: @M hy_scratch_arrays_list
    use mesh_f, ONLY: mesh_f_nblocks, mesh_f_limits, mesh_f_data_ptr, mesh_f_deltas, mesh_f_fill_halo
-   use um_flashx, ONLY: um_mesh, um_init, um_copyIn, um_copyOut
+   use um_flashx, ONLY: um_mesh, um_init, um_copyIn, um_copyOut, um_output
 
 #include "Simulation.h"
 #include "constants.h"
@@ -69,6 +69,7 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
    ! interior cells, which are already EOS-consistent.
    call um_copyIn()
    call mesh_f_fill_halo(um_mesh)
+   call um_output(timeEndAdv - dt, .false.)   ! optional dump of the initial state
    call mesh_f_deltas(um_mesh, deltas)
 
    stage = 1
@@ -112,6 +113,7 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
 
    ! mesh -> Flash-X Grid (interior), for IO, the timestep and the other units
    call um_copyOut()
+   call um_output(timeEndAdv, .true.)         ! optional dump every um_dumpInterval steps
 
    hy_lChyp = TINY(1.0)
 

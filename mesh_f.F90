@@ -38,6 +38,7 @@ module mesh_f
     public :: mesh_f_limits, mesh_f_data_ptr
     public :: mesh_f_set_domain, mesh_f_deltas, mesh_f_domain, mesh_f_cell_coords
     public :: mesh_f_fill_halo, mesh_f_fill_halo_vars
+    public :: mesh_f_write_dump
     public :: mesh_f_c_ptr
 
     interface
@@ -286,6 +287,50 @@ contains
         integer, intent(out) :: ierr
         ierr = c_mesh_fill_halo_vars(m%p, int(var_first - 1, c_int), int(nvars, c_int))
     end subroutine mesh_f_fill_halo_vars
+
+    ! Binary dump of the whole mesh (all blocks incl. halo), read by flashx/plot_mesh.py.
+    ! Stream access, native endianness:
+    !   char(8) "UMDUMP01"
+    !   int32   ndim, nvar, nblock, step, layout (1 AoS, 2 SoA), bytes per value
+    !   int32   global cells(3), blocks per axis(3), halo(3)
+    !   float64 time, domain low(3), domain high(3)
+    !   char(8) name of each variable (blank padded)
+    !   per block: int32 interior limits (low,high) x 3 axes, global 1-based,
+    !              mesh data of the block incl. halo, first index fastest
+    !              (AoS: (nvar, i, j, k), SoA: (i, j, k, nvar); MESH_TYPE_BYTES per value)
+    ! ierr = 0, or the iostat of the failed open/write
+    subroutine mesh_f_write_dump(m, filename, names, step, time, ierr)
+        type(mesh_t), intent(in) :: m
+        character(len=*), intent(in) :: filename
+        character(len=*), intent(in) :: names(:)
+        integer, intent(in) :: step
+        real(c_double), intent(in) :: time
+        integer, intent(out) :: ierr
+        real(mesh_rk), pointer :: U(:, :, :, :)
+        real(c_double) :: low(3), high(3)
+        integer :: lim(MESH_LOW:MESH_HIGH, 3), iu, b, v
+        character(len=8) :: name8
+
+        call mesh_f_domain(m, low, high)
+        open(newunit=iu, file=filename, access="stream", form="unformatted", &
+             status="replace", action="write", iostat=ierr)
+        if (ierr /= 0) return
+        write(iu, iostat=ierr) "UMDUMP01", &
+            int([mesh_f_ndim(), int(m%nvar), int(m%nblock), step, m%layout, MESH_TYPE_BYTES], c_int32_t), &
+            int(m%n * m%nb, c_int32_t), int(m%nb, c_int32_t), int(m%nh, c_int32_t), &
+            time, low, high
+        do v = 1, m%nvar
+            name8 = ""
+            if (v <= size(names)) name8 = names(v)
+            if (ierr == 0) write(iu, iostat=ierr) name8
+        end do
+        do b = 1, m%nblock
+            call mesh_f_limits(m, b, lim)
+            call mesh_f_data_ptr(m, b, U)
+            if (ierr == 0) write(iu, iostat=ierr) int(lim, c_int32_t), U
+        end do
+        close(iu)
+    end subroutine mesh_f_write_dump
 
     ! raw C handle, for calling other C functions of the mesh directly
     type(c_ptr) function mesh_f_c_ptr(m)
