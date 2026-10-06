@@ -79,7 +79,7 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
    use Timers_interface, ONLY: Timers_start, Timers_stop
    use Driver_interface, ONLY: Driver_abort
    use Hydro_data, ONLY: hy_useHydro, hy_telescoping, hy_fluxCorrect, hy_geometry, &
-                         hy_lChyp, hy_cfl, hy_cvisc, hy_smallE
+                         hy_lChyp, hy_cfl, hy_cvisc, hy_smallE, hy_coeffArray, hy_weights
    use um_flashx, ONLY: um_mesh, um_init, um_copyIn, um_copyOut, um_output
    use mesh_f, ONLY: mesh_f_ndim, mesh_f_nblocks, mesh_f_limits, mesh_f_deltas, &
                      mesh_f_field_ptr, mesh_f_fill_halo, mesh_f_nhalo, &
@@ -108,10 +108,13 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
    type(flux_field) :: flux, integratedFlux
    type(hydro_workspace) :: work
    type(hydro_parameters) :: params
-   real(rk) :: coefficients(3,3), weights(3), dtUsed, maxSpeed
+   ! relative tolerance for dtUsed vs Flash-X's dt: both are cfl/rate from the same
+   ! state, so a CFL-limited Flash-X dt may differ from NewImpl's by roundoff
+   real(rk), parameter :: dtRelTol = 1.e-10_rk
+   real(rk) :: coefficients(3,MAXSTAGE), weights(MAXSTAGE), dtUsed, maxSpeed
    integer :: inputMap(7), updateMap(6), fluxMap(5), shockVariable
    integer :: status, failedBlock, failedCell(3), dtMinLoc(5)
-   integer :: b, nDim, nVars, nBlocks, d
+   integer :: b, nDim, nVars, nBlocks, d, stage
    integer :: lo(3), hi(3), loGC(3), hiGC(3)
    character(len=256) :: abortMsg
 
@@ -200,18 +203,19 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
    params%shock_marker_present = .true.
    params%viscosity = hy_cvisc
 
-   ! SSPRK2 (default; MAXSTAGE=2 unless rk3). NewImpl accepts 2 or 3 stages.
-   ! coefficients(:,s) = (a, b, c): U_new = a*U_start + b*U_stage + c*dt*L(U_stage)
-   coefficients = 0._rk
-   weights = 0._rk
-   coefficients(:,1) = [1._rk, 0._rk, 1._rk]
-   coefficients(:,2) = [0.5_rk, 0.5_rk, 0.5_rk]
-   weights(1:2) = 0.5_rk
+   ! Spark's own SSP-RK tables (Hydro_init: SSPRK2, or SSPRK3 with the rk3 sub-unit,
+   ! MAXSTAGE from Spark.h). hy_coeffArray(stage,:) = (a, b, c) with
+   ! U_new = a*U_start + b*U_stage + c*dt*L(U_stage), which is NewImpl's coefficients(:,stage)
+   ! (the same indexing as NewImpl's hy_rk_updateSoln_wrapper).
+   do stage = 1, MAXSTAGE
+      coefficients(:,stage) = hy_coeffArray(stage,:)
+      weights(stage) = hy_weights(stage)
+   end do
 
    ! one Flash-X step = one whole-step hy_prepareAdvance; Flash-X's dt is the limit.
    call hy_prepareAdvance(grid, blocks, nDim, nVars, state, referenceState, stageState, &
         soundWork, flux, integratedFlux, work, inputMap, updateMap, fluxMap, shockVariable, &
-        params, hy_smallE, hy_cfl, coefficients(:,1:2), weights(1:2), &
+        params, hy_smallE, hy_cfl, coefficients, weights, &
         dt, dtUsed, maxSpeed, um_fillGuards, um_synchronizeFlux, serial_reduceLimits, &
         uniformmesh_eos, status, failedBlock, failedCell, dtMinLoc)
    if (status /= HY_OK) then
@@ -220,8 +224,13 @@ subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
            ", block=", failedBlock, ", cell=", failedCell(1)
       call Driver_abort(trim(abortMsg))
    end if
-   if (dtUsed < dt) then
-      call Driver_abort("[Hydro UniformMeshNewImpl] dtUsed < dt: NewImpl CFL shrank the step")
+   ! dtUsed = min(NewImpl's CFL dt, dt). Flash-X has already advanced its time by dt, so
+   ! a smaller step beyond roundoff would desynchronize the solution from the clock.
+   if (dtUsed < dt * (1._rk - dtRelTol)) then
+      write(abortMsg,'(a,es23.16,a,es23.16)') &
+           "[Hydro UniformMeshNewImpl] NewImpl CFL limit is below Flash-X's dt: dtUsed=", dtUsed, &
+           ", dt=", dt
+      call Driver_abort(trim(abortMsg))
    end if
 
    ! mesh -> Flash-X Grid (interior), for IO, the timestep and the other units
