@@ -1,0 +1,19 @@
+# Config file for physics/Hydro/HydroMain/Spark/UniformMeshNewImpl
+# NewImpl Spark Hydro on the UniformMesh: Hydro drives the standalone NewImpl whole-step
+# driver (hy_prepareAdvance) on the mesh's blocks (replacing Spark's Hydro_prepBlock /
+# Hydro_advance), while Hydro copies the Grid data into the mesh and copies the result
+# back (see flashx/README.md in the UniformMesh repo and Spark/NewImpl/README.md).
+
+REQUIRES Grid/GridMain/UG
+
+D um_nblockx number of UniformMesh blocks along x (must divide iGridSize; blocks need >= 3 cells)
+PARAMETER um_nblockx INTEGER 1
+
+D um_nblocky number of UniformMesh blocks along y
+PARAMETER um_nblocky INTEGER 1
+
+D um_nblockz number of UniformMesh blocks along z
+PARAMETER um_nblockz INTEGER 1
+
+D um_dumpInterval write the mesh (all blocks incl. halo) to um_dump_<step>.bin at the start and every N steps; 0 = off
+PARAMETER um_dumpInterval INTEGER 0

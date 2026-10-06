@@ -1,0 +1,236 @@
+!> @copyright Copyright 2023 UChicago Argonne, LLC and contributors
+!!
+!! @licenseblock
+!!   Licensed under the Apache License, Version 2.0 (the "License");
+!!   you may not use this file except in compliance with the License.
+!!
+!!   Unless required by applicable law or agreed to in writing, software
+!!   distributed under the License is distributed on an "AS IS" BASIS,
+!!   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+!!   See the License for the specific language governing permissions and
+!!   limitations under the License.
+!! @endlicenseblock
+!!
+!! @file
+!! NewImpl Spark Hydro driver running on the UniformMesh. Modified from Spark/Hydro.F90-mc:
+!! instead of iterating over Grid tiles, it copies the solution into the UniformMesh,
+!! fills the mesh halo once (periodic) and drives the standalone NewImpl whole-step driver
+!! hy_prepareAdvance on every mesh block, then copies the result back.
+!! Supports: telescoping, Cartesian geometry, no flux correction, UG Grid on one MPI rank.
+!!
+!! Hydro must be a top-level (non-module) subroutine: Hydro_interface references the
+!! external symbol hydro_ (as Spark's own Hydro.F90-mc does). uniformmesh_eos lives in the
+!! module UniformMeshNewImpl below/before and is passed to hy_prepareAdvance as the
+!! evaluateEos callback.
+!!
+!! The NewImpl storage/helper macros use the plain @macro(args)@ dialect, which Flash-X's
+!! macroProcessor cannot expand, so this file is a plain .F90 (no @M macros); the storage
+!! allocations are written out by hand (mirroring hydro_layout_uniformmesh.ini,
+!! hydro_helpers.ini and driver_helpers.ini). uniformmesh_eos is the EOS adapter that
+!! routes the NewImpl evaluateEos callback to Flash-X's Eos_multiDim.
+!!
+!!NOVARIANTS
+
+! EOS adapter for the NewImpl driver. Flash-X owns the Eos unit: pressure (5) and
+! gamma (6) are recomputed from density (1) and specific internal energy (7) over
+! the interior of every block, exactly as Eos_multiDim(MODE_DENS_EI, ...) does for
+! the host Spark. state%values(:,i,j,k,b) is the AoS 4D block slice Eos expects.
+module UniformMeshNewImpl
+
+   use hydro_grid_contract, ONLY: hydro_block_t, hydro_kind, hydro_grid_context_t
+   use newimpl_hydro, ONLY: cell_field, HY_OK
+
+#include "Simulation.h"
+#include "constants.h"
+
+   implicit none
+   private
+   public :: uniformmesh_eos
+
+contains
+
+   subroutine uniformmesh_eos(context, state, blocks, inputMap, status)
+
+      use Eos_interface, ONLY: Eos_multiDim
+
+      class(hydro_grid_context_t), intent(inout) :: context
+      type(cell_field), intent(inout) :: state
+      type(hydro_block_t), intent(in) :: blocks(:)
+      integer, intent(in) :: inputMap(7)
+      integer, intent(out) :: status
+
+      integer :: range(LOW:HIGH, MDIM), lo(MDIM), b
+
+      status = HY_OK
+      do b = 1, size(blocks)
+         range(LOW, :) = blocks(b)%lo
+         range(HIGH, :) = blocks(b)%hi
+         lo(:) = blocks(b)%guardLo
+         call Eos_multiDim(MODE_DENS_EI, range, lo, state%values(:,:,:,:,b))
+      end do
+
+   end subroutine uniformmesh_eos
+
+end module UniformMeshNewImpl
+
+! Main implementation of the NewImpl Spark Hydro solver running on the UniformMesh.
+subroutine Hydro(timeEndAdv, dt, dtOld, sweepOrder)
+
+   use Timers_interface, ONLY: Timers_start, Timers_stop
+   use Driver_interface, ONLY: Driver_abort
+   use Hydro_data, ONLY: hy_useHydro, hy_telescoping, hy_fluxCorrect, hy_geometry, &
+                         hy_lChyp, hy_cfl, hy_cvisc, hy_smallE
+   use um_flashx, ONLY: um_mesh, um_init, um_copyIn, um_copyOut, um_output
+   use mesh_f, ONLY: mesh_f_ndim, mesh_f_nblocks, mesh_f_limits, mesh_f_deltas, &
+                     mesh_f_field_ptr, mesh_f_fill_halo, mesh_f_nhalo, &
+                     MESH_LOW, MESH_HIGH, MESH_LAYOUT_AOS
+   use hydro_grid_contract, ONLY: hydro_block_t, hydro_kind
+   use newimpl_hydro, ONLY: cell_field, flux_field, hydro_workspace, hydro_parameters, HY_OK
+   use newimpl_driver, ONLY: hy_prepareAdvance
+   use uniformmesh_grid, ONLY: uniformmesh_grid_t, um_fillGuards, um_synchronizeFlux, serial_reduceLimits
+   use UniformMeshNewImpl, ONLY: uniformmesh_eos
+
+#include "Simulation.h"
+#include "constants.h"
+#include "Spark.h"
+
+   implicit none
+
+   real, intent(IN) :: timeEndAdv, dt, dtOld
+   integer, optional, intent(IN) :: sweepOrder
+
+   integer, parameter :: rk = hydro_kind
+   integer :: lim(MESH_LOW:MESH_HIGH, 3), limGC(MESH_LOW:MESH_HIGH, 3)
+   real(rk) :: deltas(3)
+   type(uniformmesh_grid_t) :: grid
+   type(hydro_block_t), allocatable :: blocks(:)
+   type(cell_field) :: state, referenceState, stageState, soundWork
+   type(flux_field) :: flux, integratedFlux
+   type(hydro_workspace) :: work
+   type(hydro_parameters) :: params
+   real(rk) :: coefficients(3,3), weights(3), dtUsed, maxSpeed
+   integer :: inputMap(7), updateMap(6), fluxMap(5), shockVariable
+   integer :: status, failedBlock, failedCell(3), dtMinLoc(5)
+   integer :: b, nDim, nVars, nBlocks, d
+   integer :: lo(3), hi(3), loGC(3), hiGC(3)
+   character(len=256) :: abortMsg
+
+   if (.NOT. hy_useHydro) return
+
+   call Timers_start("Hydro")
+
+   if (.NOT. hy_telescoping) call Driver_abort("[Hydro UniformMeshNewImpl] only telescoping Spark is supported")
+   if (hy_geometry /= CARTESIAN) call Driver_abort("[Hydro UniformMeshNewImpl] only Cartesian geometry is supported")
+   if (hy_fluxCorrect) call Driver_abort("[Hydro UniformMeshNewImpl] flux correction is not supported")
+
+   call um_init()          ! create the 3 meshes + setup checks (MESH_NHALO >= 3)
+   call um_copyIn()        ! Flash-X unk -> mesh 1 (state) interior
+   call mesh_f_fill_halo(um_mesh(1))
+   call um_output(timeEndAdv - dt, .false.)   ! optional dump of the initial state
+
+   ! Bind the three solution/scratch fields to the provider meshes zero-copy; the
+   ! %mesh flag routes guard fills in um_fillGuards and keeps release_cell from
+   ! deallocating mesh-owned storage (mirrors uniformmesh_shock_tube.F90-mc).
+   call mesh_f_field_ptr(um_mesh(1), state%values)
+   call mesh_f_field_ptr(um_mesh(2), referenceState%values)
+   call mesh_f_field_ptr(um_mesh(3), stageState%values)
+   state%mesh = 1
+   referenceState%mesh = 2
+   stageState%mesh = 3
+
+   ! Uniform block descriptor: every block covers the same cellsPerBlock cells per
+   ! axis on the interior and mesh_f_nhalo(1)+... halo cells outside. The driver
+   ! hard-requires guardLo(d) <= lo(d)-3 and guardHi(d) >= hi(d)+3 (MESH_NHALO >= 3).
+   nDim = mesh_f_ndim()
+   nVars = NUNK_VARS
+   nBlocks = mesh_f_nblocks(um_mesh(1))
+   grid%meshes(:) = um_mesh        ! the provider meshes are the um_flashx ones
+   grid%nDim = nDim
+   grid%nVars = nVars
+   grid%nBlocks = nBlocks
+   call mesh_f_limits(um_mesh(1), 1, lim, limGC)
+   call mesh_f_deltas(um_mesh(1), deltas)
+   grid%dx(:) = deltas
+   do d = 1, 3
+      if (d <= nDim) then
+         grid%cellsPerBlock(d) = lim(MESH_HIGH, d) - lim(MESH_LOW, d) + 1
+         grid%halo(d) = lim(MESH_LOW, d) - limGC(MESH_LOW, d)
+      else
+         grid%cellsPerBlock(d) = 1
+         grid%halo(d) = 0
+      end if
+   end do
+
+   allocate(blocks(nBlocks))
+   do b = 1, nBlocks
+      blocks(b)%block = b
+      blocks(b)%lo(:) = 1
+      blocks(b)%hi(:) = grid%cellsPerBlock
+      blocks(b)%guardLo(:) = 1 - grid%halo
+      blocks(b)%guardHi(:) = grid%cellsPerBlock + grid%halo
+      blocks(b)%spacing(:) = deltas
+      blocks(b)%volume = product(deltas(1:nDim))
+      do d = 1, nDim
+         blocks(b)%faceArea(d) = blocks(b)%volume / deltas(d)
+      end do
+   end do
+
+   ! Scratch: mirror @hy_allocateCell/Flux/Workspace@ from hydro_helpers.ini +
+   ! hydro_layout_uniformmesh.ini (mesh-owned cell fields are pointers bound above;
+   ! soundWork and work%flat/minus/plus are allocatable scratch; flux/face slices)
+   lo = blocks(1)%lo; hi = blocks(1)%hi
+   loGC = blocks(1)%guardLo; hiGC = blocks(1)%guardHi
+   allocate(soundWork%values(7, loGC(1):hiGC(1), loGC(2):hiGC(2), loGC(3):hiGC(3), nBlocks))
+   allocate(flux%values(5, loGC(1):hiGC(1), loGC(2):hiGC(2), loGC(3):hiGC(3), nDim, nBlocks))
+   allocate(integratedFlux%values(5, loGC(1):hiGC(1), loGC(2):hiGC(2), loGC(3):hiGC(3), nDim, nBlocks))
+   allocate(work%flat%values(1, loGC(1):hiGC(1), loGC(2):hiGC(2), loGC(3):hiGC(3), nBlocks))
+   allocate(work%minus%values(7, loGC(1):hiGC(1), loGC(2):hiGC(2), loGC(3):hiGC(3), nBlocks))
+   allocate(work%plus%values(7, loGC(1):hiGC(1), loGC(2):hiGC(2), loGC(3):hiGC(3), nBlocks))
+   work%lo = loGC; work%hi = hiGC; work%blocks = nBlocks
+
+   ! variable maps (see Spark.h + Simulation.h): input = density, ux, uy, uz,
+   ! pressure, gamma, eint;  update = density, ux, uy, uz, total energy, eint;
+   ! flux = mass, xmom, ymom, zmom, energy. The driver validates these are distinct.
+   inputMap = [DENS_VAR, VELX_VAR, VELY_VAR, VELZ_VAR, PRES_VAR, GAMC_VAR, EINT_VAR]
+   updateMap = [DENS_VAR, VELX_VAR, VELY_VAR, VELZ_VAR, ENER_VAR, EINT_VAR]
+   fluxMap = [HY_MASS, HY_XMOM, HY_YMOM, HY_ZMOM, HY_ENER]
+   shockVariable = SHOK_VAR
+
+   params%hybrid = .true.
+   params%shock_marker_present = .true.
+   params%viscosity = hy_cvisc
+
+   ! SSPRK2 (default; MAXSTAGE=2 unless rk3). NewImpl accepts 2 or 3 stages.
+   ! coefficients(:,s) = (a, b, c): U_new = a*U_start + b*U_stage + c*dt*L(U_stage)
+   coefficients = 0._rk
+   weights = 0._rk
+   coefficients(:,1) = [1._rk, 0._rk, 1._rk]
+   coefficients(:,2) = [0.5_rk, 0.5_rk, 0.5_rk]
+   weights(1:2) = 0.5_rk
+
+   ! one Flash-X step = one whole-step hy_prepareAdvance; Flash-X's dt is the limit.
+   call hy_prepareAdvance(grid, blocks, nDim, nVars, state, referenceState, stageState, &
+        soundWork, flux, integratedFlux, work, inputMap, updateMap, fluxMap, shockVariable, &
+        params, hy_smallE, hy_cfl, coefficients(:,1:2), weights(1:2), &
+        dt, dtUsed, maxSpeed, um_fillGuards, um_synchronizeFlux, serial_reduceLimits, &
+        uniformmesh_eos, status, failedBlock, failedCell, dtMinLoc)
+   if (status /= HY_OK) then
+      write(abortMsg,'(a,i0,a,i0,a,i0)') &
+           "[Hydro UniformMeshNewImpl] hy_prepareAdvance failed: status=", status, &
+           ", block=", failedBlock, ", cell=", failedCell(1)
+      call Driver_abort(trim(abortMsg))
+   end if
+   if (dtUsed < dt) then
+      call Driver_abort("[Hydro UniformMeshNewImpl] dtUsed < dt: NewImpl CFL shrank the step")
+   end if
+
+   ! mesh -> Flash-X Grid (interior), for IO, the timestep and the other units
+   call um_copyOut()
+   call um_output(timeEndAdv, .true.)
+
+   hy_lChyp = TINY(1.0)
+
+   call Timers_stop("Hydro")
+
+
+end subroutine Hydro
