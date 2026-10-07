@@ -4,7 +4,7 @@
 #      final checkpoint to the 1x1 run (sfocu SUCCESS)                      -> PASS/FAIL
 #   B. NewImpl vs plain Spark, same parameters:
 #      vortex (smooth): max sfocu mag error <= VORTEX_TOL                   -> PASS/FAIL
-#      sod (shocks): the schemes differ near shocks by design               -> INFO only
+#      sod, sod_hybrid (shocks; hybrid Riemann solver off / on in both)     -> INFO only
 #      (error norms, and the sum of velx, which is 0 for a solution that keeps the
 #      problem's mirror symmetry about x = 0.25)
 #   C. both kinds take the same number of steps                            -> PASS/FAIL
@@ -69,8 +69,8 @@ run_case() {  # $1 = executable dir, $2 = run dir, $3 = par file, $4 = nbx, $5 =
 }
 
 for p in "${PROBLEMS[@]}"; do
-    read -r name sim par <<< "$p"
-    ni="$FLASHX/$(objdir "$name" ni)"; ref="$FLASHX/$(objdir "$name" ref)"
+    read -r name sim par build <<< "$p"
+    ni="$FLASHX/$(objdir "$build" ni)"; ref="$FLASHX/$(objdir "$build" ref)"
     [ -x "$ni/flashx" ] && [ -x "$ref/flashx" ] || die "missing executables for $name, run build.sh first"
     splits_var="SPLITS_$name[@]"; compare_var="COMPARE_$name"
     splits=("${!splits_var}"); compare=${!compare_var}
@@ -117,7 +117,11 @@ done
 # D. exact-solution errors, symmetry, plots (information only; needs numpy, h5py, matplotlib)
 echo "== plots and errors vs exact solution" | tee -a "$SUMMARY"
 if python3 -c "import numpy, h5py, matplotlib" 2> /dev/null; then
-    python3 "$EVAL_DIR/plot.py" "$OUT" --compare "vortex=$COMPARE_vortex" "sod=$COMPARE_sod" | tee -a "$SUMMARY" ||
+    compares=()
+    for p in "${PROBLEMS[@]}"; do
+        read -r name _ <<< "$p"; compare_var="COMPARE_$name"; compares+=("$name=${!compare_var}")
+    done
+    python3 "$EVAL_DIR/plot.py" "$OUT" --compare "${compares[@]}" | tee -a "$SUMMARY" ||
         echo "INFO  plot.py reported an error (see above); the checks are unaffected" | tee -a "$SUMMARY"
 else
     echo "INFO  skipped: python3 lacks numpy/h5py/matplotlib (python3 -m pip install --user h5py); run flashx/eval/plot.py $OUT later" | tee -a "$SUMMARY"

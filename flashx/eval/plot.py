@@ -47,6 +47,8 @@ class Checkpoint:
             self.time = float(_named_values(f["real scalars"])["time"])
             self.real = _named_values(f["real runtime parameters"])
             self.int = _named_values(f["integer runtime parameters"])
+            # logical parameters are stored as integers (0/1)
+            self.bool = {k: bool(v) for k, v in _named_values(f["logical runtime parameters"]).items()}
             names = [n.decode().strip() for n in f["unknown names"][:, 0]]
             # unknowns are (block, k, j, i); keep the k=0 plane as [j, i]
             self.var = {n: np.array(f[n][0, 0]) for n in names}
@@ -201,25 +203,25 @@ def mirror_index(chk):
 
 # ---------------------------------------------------------------- problems
 
-def do_vortex(out, ni_dir, ref_dir):
+def do_vortex(out, name, ni_dir, ref_dir):
     res, lines = {}, []
     first = Checkpoint(checkpoints(ni_dir)[0])
     init_err = norms(first.var["dens"], vortex_exact(first, first.time)["dens"])
     res["exact_vs_initial_condition"] = init_err
     runs = {"NewImpl": Checkpoint(checkpoints(ni_dir)[-1]), "Spark": Checkpoint(checkpoints(ref_dir)[-1])}
     exact = {}
-    for name, chk in runs.items():
+    for impl, chk in runs.items():
         ex = vortex_exact(chk, chk.time)
-        exact[name] = ex
-        res[name] = {"time": chk.time, "file": str(chk.path),
+        exact[impl] = ex
+        res[impl] = {"time": chk.time, "file": str(chk.path),
                      "error_vs_exact": {v: norms(chk.var[v], ex[v]) for v in ("dens", "velx", "vely", "pres")}}
     a, b = runs["NewImpl"], runs["Spark"]
     res["NewImpl_vs_Spark"] = {v: norms(a.var[v], b.var[v]) for v in ("dens", "velx", "vely", "pres")}
-    lines.append(f"vortex: exact solution vs stored initial condition: dens Linf {init_err['Linf']:.2e} "
+    lines.append(f"{name}: exact solution vs stored initial condition: dens Linf {init_err['Linf']:.2e} "
                  f"(check of the exact-solution formula)")
-    for name, chk in runs.items():
-        e = res[name]["error_vs_exact"]["dens"]
-        lines.append(f"vortex: {name} at t={chk.time:.5g}: dens error vs exact L1 {e['L1']:.3e}, Linf {e['Linf']:.3e}")
+    for impl, chk in runs.items():
+        e = res[impl]["error_vs_exact"]["dens"]
+        lines.append(f"{name}: {impl} at t={chk.time:.5g}: dens error vs exact L1 {e['L1']:.3e}, Linf {e['Linf']:.3e}")
 
     ex = exact["NewImpl"]
     ext = [a.lo[0], a.hi[0], a.lo[1], a.hi[1]]
@@ -242,27 +244,27 @@ def do_vortex(out, ni_dir, ref_dir):
         axis.set_xlabel("x")
         axis.set_ylabel("y")
         fig.colorbar(im, ax=axis, shrink=0.85)
-    fig.suptitle("Isentropic vortex: density after one period")
-    fig.savefig(out / "vortex.png", dpi=110)
+    fig.suptitle(f"{name}: isentropic vortex, density after one period")
+    fig.savefig(out / f"{name}.png", dpi=110)
     plt.close(fig)
     return res, lines
 
 
-def do_sod(out, ni_dir, ref_dir):
+def do_sod(out, name, ni_dir, ref_dir):
     res, lines = {}, []
     first = Checkpoint(checkpoints(ni_dir)[0])
     ex0, _ = sod_exact(first.real, first.lo, first.hi, first.x, first.time)
     init_err = norms(first.var["dens"].mean(axis=0), ex0["dens"])
     res["exact_vs_initial_condition"] = init_err
-    lines.append(f"sod: exact solution vs stored initial condition: dens Linf {init_err['Linf']:.2e} "
+    lines.append(f"{name}: exact solution vs stored initial condition: dens Linf {init_err['Linf']:.2e} "
                  f"(check of the exact-solution setup)")
     runs = {"NewImpl": Checkpoint(checkpoints(ni_dir)[-1]), "Spark": Checkpoint(checkpoints(ref_dir)[-1])}
     prof, exact = {}, {}
-    for name, chk in runs.items():
+    for impl, chk in runs.items():
         ex, valid = sod_exact(chk.real, chk.lo, chk.hi, chk.x, chk.time)
-        exact[name] = ex
+        exact[impl] = ex
         p = {v: chk.var[v].mean(axis=0) for v in ("dens", "velx", "pres")}   # uniform in y
-        prof[name] = p
+        prof[impl] = p
         y_dev = max(float(np.max(np.abs(chk.var[v] - chk.var[v][0]))) for v in ("dens", "velx", "pres"))
         entry = {"time": chk.time, "file": str(chk.path), "exact_valid": bool(valid),
                  "y_uniformity_max_dev": y_dev,
@@ -273,14 +275,14 @@ def do_sod(out, ni_dir, ref_dir):
         if mi is not None:
             entry["symmetry"] = {"u_odd_max": float(np.max(np.abs(p["velx"] + p["velx"][mi]))),
                                  "rho_even_max": float(np.max(np.abs(p["dens"] - p["dens"][mi])))}
-        res[name] = entry
+        res[impl] = entry
         e = entry["error_vs_exact"]["dens"]
         sym = (f"max|u(x)+u(x')| {entry['symmetry']['u_odd_max']:.2e}, "
                f"max|rho(x)-rho(x')| {entry['symmetry']['rho_even_max']:.2e}") if mi is not None else "n/a"
-        lines.append(f"sod: {name} at t={chk.time:.5g}: dens error vs exact L1 {e['L1']:.3e}, Linf {e['Linf']:.3e}; "
+        lines.append(f"{name}: {impl} at t={chk.time:.5g}: dens error vs exact L1 {e['L1']:.3e}, Linf {e['Linf']:.3e}; "
                      f"symmetry {sym}; rows identical in y: {'yes' if y_dev == 0 else f'no (max dev {y_dev:.1e})'}")
         if not valid:
-            lines.append(f"sod: warning: at t={chk.time:.5g} the two periodic wave systems may interact; exact solution not valid")
+            lines.append(f"{name}: warning: at t={chk.time:.5g} the two periodic wave systems may interact; exact solution not valid")
     res["NewImpl_vs_Spark"] = {v: norms(prof["NewImpl"][v], prof["Spark"][v]) for v in ("dens", "velx", "pres")}
 
     a = runs["NewImpl"]
@@ -297,19 +299,20 @@ def do_sod(out, ni_dir, ref_dir):
     mi = mirror_index(a)
     axis = ax[1, 1]
     if mi is not None:
-        for name, mk in (("NewImpl", "o-"), ("Spark", "x-")):
-            u = prof[name]["velx"]
-            axis.plot(a.x, u + u[mi], mk, ms=3, lw=0.8, label=name)
+        for impl, mk in (("NewImpl", "o-"), ("Spark", "x-")):
+            u = prof[impl]["velx"]
+            axis.plot(a.x, u + u[mi], mk, ms=3, lw=0.8, label=impl)
         axis.set_title("mirror symmetry: u(x) + u(x′)  (0 if symmetric)")
         axis.set_xlabel("x")
         axis.legend(fontsize=8)
-    fig.suptitle("Sod (periodic, 2D strip averaged over y)")
-    fig.savefig(out / "sod.png", dpi=110)
+    fig.suptitle(f"{name}: Sod (periodic, 2D strip averaged over y), use_hybridRiemann = {a.bool.get('use_hybridriemann', False)}")
+    fig.savefig(out / f"{name}.png", dpi=110)
     plt.close(fig)
     return res, lines
 
 
-PROBLEMS = {"vortex": do_vortex, "sod": do_sod}
+# analysis by problem name prefix: vortex*, sod* (e.g. sod_hybrid)
+KINDS = {"vortex": do_vortex, "sod": do_sod}
 
 
 def main():
@@ -318,19 +321,23 @@ def main():
     ap.add_argument("--compare", nargs="*", default=[], metavar="PROBLEM=SPLIT",
                     help="NewImpl block split to use (default 1x1; all splits are bitwise identical)")
     args = ap.parse_args()
-    split = {"vortex": "1x1", "sod": "1x1"}
-    split.update(dict(s.split("=", 1) for s in args.compare))
+    split = dict(s.split("=", 1) for s in args.compare)
 
     plots = args.out / "plots"
     plots.mkdir(parents=True, exist_ok=True)
     results, ok = {}, True
-    for name, func in PROBLEMS.items():
-        ni, ref = args.out / name / f"ni_{split[name]}", args.out / name / "ref"
+    # every problem directory run.sh wrote (one with a ref/ run), in a stable order
+    for name in sorted(d.name for d in args.out.iterdir() if (d / "ref").is_dir()):
+        func = next((f for kind, f in KINDS.items() if name.startswith(kind)), None)
+        if func is None:
+            print(f"INFO  {name}: no analysis for this problem, skipped")
+            continue
+        ni, ref = args.out / name / f"ni_{split.get(name, '1x1')}", args.out / name / "ref"
         if not (checkpoints(ni) and checkpoints(ref)):
             print(f"INFO  {name}: no checkpoints in {ni} or {ref}, skipped")
             continue
         try:
-            res, lines = func(plots, ni, ref)
+            res, lines = func(plots, name, ni, ref)
         except Exception as exc:  # report and continue with the next problem
             print(f"INFO  {name}: plot.py failed: {exc}")
             ok = False

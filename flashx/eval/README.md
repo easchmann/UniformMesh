@@ -30,26 +30,41 @@ with HDF5 IO. The NewImpl builds add `--with-unit=physics/Hydro/HydroMain/Spark/
 `build.sh` reinstalls that sub-unit from this repo (`flashx/install_newimpl.sh`, dim 2d,
 halo 4) before building, so they always use the current working copy.
 
-## Problems (`vortex.par`, `sod.par`)
+## Problems (`vortex.par`, `sod.par`, `sod_hybrid.par`)
 
-| | Isentropic vortex | Sod |
-|---|---|---|
-| Grid | 64 x 64, domain [0,10]^2 | 128 x 16, domain [0,1]^2 |
-| Boundaries | periodic | periodic (two mirror-image wave systems: at x = 0.5 and at x = 0) |
-| End | t = 10 (one period, 400 steps) | t = 0.025 (26 steps) |
-| dt | fixed 0.025 (`dtmin = dtmax`) | capped at 1e-3 (`dtmax`) |
-| What it tests | smooth flow | shocks: shock detection, hybrid Riemann solver, flattening |
+Both are Flash-X's own simulation units (`Simulation/SimulationMain/IsentropicVortex`,
+`.../Sod`); the parameter files here adapt them to the mesh (uniform blocks, periodic).
+
+| | Isentropic vortex | Sod | Sod, hybrid solver |
+|---|---|---|---|
+| Grid | 64 x 64, domain [0,10]^2 | 128 x 16, domain [0,1]^2 | same as Sod |
+| Boundaries | periodic | periodic (two mirror-image wave systems: at x = 0.5 and at x = 0) | same |
+| End | t = 10 (one period, 400 steps) | t = 0.025 (26 steps) | same |
+| dt | fixed 0.025 (`dtmin = dtmax`) | capped at 1e-3 (`dtmax`) | same |
+| Riemann solver | HLLC (no shocks) | HLLC everywhere (`use_hybridRiemann = .false.`, Spark's default) | HLLE in shock-flagged cells (`use_hybridRiemann = .true.`) |
+| What it tests | smooth flow | shocks: shock detection, flattening, viscosity | the hybrid HLLE path in addition |
+
+`sod_hybrid` runs on the Sod executables; only the parameter file differs. NewImpl takes
+`use_hybridRiemann`, `use_flattening`, `cvisc`, `smlrho` and `smallp` from Spark's runtime
+parameters (as NewImpl's own `hy_rk_getFaceFlux_wrapper` does), so both codes always run
+with the same solver settings.
+
+Differences to Flash-X's standard Sod (`Sod/flash.par`): a diagonal interface
+(`sim_xangle = sim_yangle = 45`) on AMR with outflow boundaries to t = 0.2. Here the interface
+is normal to x on a uniform grid with periodic boundaries (the mesh supports only those),
+which adds the mirrored problem at x = 0 and limits the run to the time before the two
+wave systems meet.
 
 ## Checks (`run.sh`)
 
-1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 16x16, 4x1, 1x8 and Sod
-   with 4x1, 8x2, 16x4, 32x1; every final checkpoint must be bitwise identical to the
-   1x1 run (`sfocu` SUCCESS). Tests halo exchange, flux synchronisation and the
-   neighbour lookup.
+1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 16x16, 4x1, 1x8, Sod
+   with 4x1, 8x2, 16x4, 32x1 and Sod-hybrid with 4x1, 16x4; every final checkpoint must
+   be bitwise identical to the 1x1 run (`sfocu` SUCCESS). Tests halo exchange, flux
+   synchronisation and the neighbour lookup.
 2. **NewImpl vs plain Spark**: vortex must agree to roundoff (max `sfocu` mag error
-   <= 1e-12). Sod is reported only (INFO): NewImpl and Spark differ near shocks; the
-   summary lists the error norms and the sum of `velx`, which is 0 for a solution that
-   keeps the problem's mirror symmetry about x = 0.25.
+   <= 1e-12). The Sod problems are reported only (INFO): NewImpl and Spark differ near
+   shocks; the summary lists the error norms and the sum of `velx`, which is 0 for a
+   solution that keeps the problem's mirror symmetry about x = 0.25.
 3. Both take the same number of steps.
 
 4. **Exact solution and plots** (`plot.py`, information only): the final checkpoints of
@@ -74,7 +89,8 @@ eval_runs/<date>/
 ├── results.json       all plot.py metrics, per problem and implementation
 ├── plots/vortex.png   density NewImpl / exact / Spark, errors vs exact, NewImpl − Spark
 ├── plots/sod.png      rho, u, p profiles vs exact; mirror symmetry u(x) + u(x')
-└── vortex/, sod/      ni_<split>/ and ref/ run directories (flash.par, run.out, *.log,
+├── plots/sod_hybrid.png  the same for the hybrid-solver variant
+└── vortex/, sod/, sod_hybrid/  ni_<split>/ and ref/ run directories (flash.par, run.out, *.log,
                        *_hdf5_chk_*, *_hdf5_plt_cnt_*), sfocu_*.txt reports
 ```
 
@@ -86,13 +102,20 @@ Checkpoints open in VisIt/yt, or with `h5dump`. To look at a result on the lapto
 rsync -az --exclude '*_hdf5_*' riken:Flash-X-MOL/eval_runs/<date>/ eval_runs/<date>/   # without the HDF5 files
 ```
 
-Result of the first evaluation (Flash-X `44188e65b`, UniformMesh `c696ce3`):
-- all block splits bitwise identical;
+Results (Flash-X `44188e65b`, UniformMesh `c696ce3` + the solver-settings fix):
+- all block splits bitwise identical (vortex, Sod, Sod-hybrid);
 - vortex: NewImpl = Spark to ~1e-14; error vs exact at t = 9.979: dens L1 3.3e-4,
   Linf 7.6e-3 (identical for both);
-- Sod at t = 0.0255: dens error vs exact L1 6.1e-3 (NewImpl) vs 6.4e-3 (Spark), Linf
-  7.2e-2 vs 7.5e-2. Spark keeps the mirror symmetry to 1e-14, NewImpl breaks it at the
-  waves by up to 1.5e-2 (u) and 1.0e-2 (rho). The standalone NewImpl driver, without the UniformMesh, breaks it too.
+- Sod at t = 0.0255, dens error vs exact (L1 / Linf) and mirror symmetry max |u(x)+u(x')|:
+
+  | | NewImpl | Spark |
+  |---|---|---|
+  | `sod` (HLLC everywhere) | 6.05e-3 / 7.24e-2, symmetry 1.5e-2 | 6.41e-3 / 7.54e-2, symmetry 1e-14 |
+  | `sod_hybrid` (HLLE in shocks) | 6.08e-3 / 7.23e-2, symmetry 1.5e-2 | 6.44e-3 / 7.59e-2, symmetry 1e-14 |
+
+  NewImpl breaks the mirror symmetry at the waves with and without the hybrid solver;
+  Spark keeps it in both. The standalone NewImpl driver, without the UniformMesh, breaks it too.
+
 ## Not covered
 
 - dt is fixed/capped in both problems, so the CFL-limited path (and the dt tolerance in

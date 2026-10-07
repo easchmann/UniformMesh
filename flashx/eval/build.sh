@@ -28,11 +28,14 @@ build_one() {  # $1 = simulation, $2 = objdir, $3.. = extra setup arguments
     [ -x "$FLASHX/$obj/flashx" ] || die "$obj: no flashx executable"
 }
 
+built=" "
 for p in "${PROBLEMS[@]}"; do
-    read -r name sim _ <<< "$p"
-    build_one "$sim" "$(objdir "$name" ni)" --with-unit=physics/Hydro/HydroMain/Spark/UniformMeshNewImpl
-    grep -q "hy_prepareAdvance" "$FLASHX/$(objdir "$name" ni)/Hydro.F90" || \
-        die "$(objdir "$name" ni): Hydro.F90 is not the UniformMeshNewImpl driver"
-    build_one "$sim" "$(objdir "$name" ref)"
+    read -r _ sim _ build <<< "$p"
+    [[ "$built" == *" $build "* ]] && continue   # problems sharing a build differ only in parameters
+    build_one "$sim" "$(objdir "$build" ni)" --with-unit=physics/Hydro/HydroMain/Spark/UniformMeshNewImpl
+    grep -q "hy_prepareAdvance" "$FLASHX/$(objdir "$build" ni)/Hydro.F90" || \
+        die "$(objdir "$build" ni): Hydro.F90 is not the UniformMeshNewImpl driver"
+    build_one "$sim" "$(objdir "$build" ref)"
+    built+="$build "
 done
 log "build done"

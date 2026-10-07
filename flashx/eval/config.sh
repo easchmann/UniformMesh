@@ -29,16 +29,22 @@ HALO=${HALO:-4}
 
 SFOCU="$FLASHX/tools/sfocu/sfocu"
 
-# problems: name, Flash-X simulation, parameter file in this directory
-PROBLEMS=("vortex IsentropicVortex vortex.par" "sod Sod sod.par")
+# problems: name, Flash-X simulation, parameter file in this directory, build.
+# Problems with the same build share the executables and differ only in parameters
+# (sod: hybrid Riemann solver off, Spark's default; sod_hybrid: on, in both codes).
+PROBLEMS=("vortex IsentropicVortex vortex.par vortex"
+          "sod Sod sod.par sod"
+          "sod_hybrid Sod sod_hybrid.par sod")
 # block splits (nbx x nby) for the split-invariance test; 1x1 is the baseline
 SPLITS_vortex=(1x1 2x2 4x4 8x8 16x16 4x1 1x8)
 SPLITS_sod=(1x1 4x1 8x2 16x4 32x1)
+SPLITS_sod_hybrid=(1x1 4x1 16x4)
 # split used for the NewImpl-vs-Spark comparison
 COMPARE_vortex=4x4
 COMPARE_sod=4x1
+COMPARE_sod_hybrid=4x1
 
-# object directories in $FLASHX: eval_<problem>_ni (NewImpl on the UniformMesh), eval_<problem>_ref (plain Spark)
+# object directories in $FLASHX: eval_<build>_ni (NewImpl on the UniformMesh), eval_<build>_ref (plain Spark)
 objdir() { echo "eval_$1_$2"; }
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }

@@ -1,4 +1,4 @@
-# Sod shock tube on the UniformMesh NewImpl (UG Grid, 1 MPI rank, periodic)
+# Sod shock tube with the hybrid Riemann solver, on the UniformMesh NewImpl (UG Grid, 1 MPI rank, periodic)
 # The mesh wraps the global periodic domain; the Sod discontinuity is at x=0.5.
 iGridSize       = 128
 jGridSize       = 16
@@ -9,8 +9,8 @@ um_nblocky      = 1
 um_dumpInterval = 25
 
 #               simulation parameters
-basenm          = "sod_um_"
-log_file        = "sod_um.log"
+basenm          = "sod_hybrid_"
+log_file        = "sod_hybrid.log"
 restart         = .false.
 nend            = 200
 tmax = 0.025
@@ -20,7 +20,7 @@ dtmax           = 1.e-3
 dtinit          = 1.e-3
 
 # Spark solver settings (read by both plain Spark and UniformMeshNewImpl)
-use_hybridRiemann = .false.   # HLLC everywhere (Spark's default)
+use_hybridRiemann = .true.    # HLLE inside shocks flagged by shok
 use_flattening    = .true.
 cvisc             = 0.1
 
