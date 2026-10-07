@@ -1,0 +1,47 @@
+# Sod shock tube on the UniformMesh NewImpl (UG Grid, 1 MPI rank, periodic)
+# The mesh wraps the global periodic domain; the Sod discontinuity is at x=0.5.
+iGridSize       = 128
+jGridSize       = 16
+
+#               UniformMeshNewImpl
+um_nblockx      = 4
+um_nblocky      = 1
+um_dumpInterval = 25
+
+#               simulation parameters
+basenm          = "sod_um_"
+log_file        = "sod_um.log"
+restart         = .false.
+nend            = 200
+tmax = 0.025
+cfl             = 0.8
+dtmin           = 1.e-6
+dtmax           = 1.e-3
+dtinit          = 1.e-3
+
+# problem params (Sod)
+gamma           = 1.4
+sim_rhoLeft     = 1.0
+sim_rhoRight    = 0.125
+sim_pLeft       = 1.0
+sim_pRight      = 0.1
+sim_uLeft       = 0.0
+sim_uRight      = 0.0
+sim_posn        = 0.5
+
+# pitch (2D slab) thickness 1 in the periodic transverse axis
+xmin            = 0.0
+xmax            = 1.0
+ymin            = 0.0
+ymax            = 1.0
+geometry        = "cartesian"
+
+xl_boundary_type = "periodic"
+xr_boundary_type = "periodic"
+yl_boundary_type = "periodic"
+yr_boundary_type = "periodic"
+
+smlrho          = 1.e-100
+smallp          = 1.e-100
+smalle          = 1.e-100
+smallt          = 1.e-100

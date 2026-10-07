@@ -6,6 +6,8 @@ test_mesh_f
 check.log
 *.bin
 
+*__pycache__
+
 # macOS
 .DS_Store
 

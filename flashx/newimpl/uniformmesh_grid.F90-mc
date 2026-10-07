@@ -1,0 +1,194 @@
+! UniformMesh Grid provider: periodic uniform Cartesian blocks backed by the mesh
+! library. The provider owns the three meshes (1=state, 2=reference, 3=stage) and
+! the block metadata; the cell fields bound to those meshes are indexed with
+! block-local coordinates (1-halo .. n+halo on every used axis), so the blocks
+! descriptor is identical for every block. Halo exchange and block-neighbour lookup
+! go through the mesh library's C side (mesh_fill_halo / mesh_block_neighbor).
+module uniformmesh_grid
+  use newimpl_hydro, only: cell_field,flux_field,HY_OK,HY_BAD_INPUT,HY_BAD_STATE
+  use hydro_grid_contract
+  use mesh_f, only: mesh_t,MESH_LOW,MESH_HIGH,MESH_OK,mesh_rk
+  use mesh_f, only: mesh_f_create,mesh_f_ndim,mesh_f_limits,mesh_f_deltas
+  use mesh_f, only: mesh_f_fill_halo,mesh_f_neighbor
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  implicit none
+  private
+  integer, parameter :: rk=hydro_kind
+  type, extends(hydro_grid_context_t), public :: uniformmesh_grid_t
+    type(mesh_t) :: meshes(3)              ! 1=state, 2=reference, 3=stage
+    integer :: nDim=1,nVars=0,nBlocks=0
+    integer :: cellsPerBlock(3)=1,halo(3)=0
+    real(rk) :: dx(3)=1._rk,gamma=1.4_rk
+  end type
+  public :: um_describe,um_fillGuards,um_synchronizeFlux,serial_reduceLimits,idealGas_eos
+contains
+
+  ! Create the state/reference/stage meshes (identical geometry) and the uniform
+  ! block descriptor. nCells/nBlocksAxis are global cell and block counts per axis
+  ! (unused axes are ignored by the mesh library, which collapses them to 1).
+  subroutine um_describe(context,nCells,nBlocksAxis,nVars,blocks,status)
+    type(uniformmesh_grid_t), intent(out) :: context
+    integer, intent(in) :: nCells(3),nBlocksAxis(3),nVars
+    type(hydro_block_t), allocatable, intent(out) :: blocks(:)
+    integer, intent(out) :: status
+    integer :: ierr,ndim,b,d,lim(MESH_LOW:MESH_HIGH,3),limGC(MESH_LOW:MESH_HIGH,3)
+    real(rk) :: deltas(3)
+    status=HY_BAD_INPUT
+    if (nVars<1) return
+    if (any(nCells<1) .or. any(nBlocksAxis<1)) return
+    call mesh_f_create(context%meshes(1),nCells(1),nCells(2),nCells(3), &
+                       nBlocksAxis(1),nBlocksAxis(2),nBlocksAxis(3),nVars,ierr)
+    if (ierr/=MESH_OK) return
+    call mesh_f_create(context%meshes(2),nCells(1),nCells(2),nCells(3), &
+                       nBlocksAxis(1),nBlocksAxis(2),nBlocksAxis(3),nVars,ierr)
+    if (ierr/=MESH_OK) return
+    call mesh_f_create(context%meshes(3),nCells(1),nCells(2),nCells(3), &
+                       nBlocksAxis(1),nBlocksAxis(2),nBlocksAxis(3),nVars,ierr)
+    if (ierr/=MESH_OK) return
+    ndim=mesh_f_ndim(); context%nDim=ndim; context%nVars=nVars
+    context%nBlocks=product(nBlocksAxis(1:ndim))
+    call mesh_f_limits(context%meshes(1),1,lim,limGC)
+    call mesh_f_deltas(context%meshes(1),deltas)
+    context%dx=deltas
+    do d=1,3
+      if (d<=ndim) then
+        context%cellsPerBlock(d)=lim(MESH_HIGH,d)-lim(MESH_LOW,d)+1
+        context%halo(d)=lim(MESH_LOW,d)-limGC(MESH_LOW,d)
+      else
+        context%cellsPerBlock(d)=1; context%halo(d)=0
+      end if
+    end do
+    allocate(blocks(context%nBlocks))
+    do b=1,context%nBlocks
+      blocks(b)%block=b; blocks(b)%lo=1
+      blocks(b)%hi=context%cellsPerBlock
+      blocks(b)%guardLo=1-context%halo
+      blocks(b)%guardHi=context%cellsPerBlock+context%halo
+      blocks(b)%spacing=context%dx
+      blocks(b)%volume=product(context%dx(1:ndim))
+      do d=1,3
+        blocks(b)%faceArea(d)=blocks(b)%volume/context%dx(d)
+      end do
+    end do
+    status=HY_OK
+  end subroutine um_describe
+
+  ! Exchange guard cells of the mesh a field is bound to. The %mesh flag says which
+  ! of the provider meshes (1=state, 2=reference, 3=stage) the field aliases.
+  subroutine um_fillGuards(context,state,blocks,nVars,status)
+    class(hydro_grid_context_t), intent(inout) :: context
+    type(cell_field), intent(inout) :: state
+    type(hydro_block_t), intent(in) :: blocks(:)
+    integer, intent(in) :: nVars
+    integer, intent(out) :: status
+    status=HY_BAD_INPUT
+    select type(context)
+    type is(uniformmesh_grid_t)
+      if (state%mesh<1 .or. state%mesh>size(context%meshes)) return
+      call mesh_f_fill_halo(context%meshes(state%mesh))
+      status=HY_OK
+    end select
+  end subroutine um_fillGuards
+
+  ! Make the shared interface flux consistent: each block's high face normal to d
+  ! is overwritten with its periodic neighbour's low face so that every interface
+  ! is computed exactly once and integrated transfers telescope.
+  subroutine um_synchronizeFlux(context,flux,blocks,fluxMap,nDim,status)
+    !$macro_imports
+    class(hydro_grid_context_t), intent(inout) :: context
+    type(flux_field), intent(inout) :: flux
+    type(hydro_block_t), intent(in) :: blocks(:)
+    integer, intent(in) :: fluxMap(5),nDim
+    integer, intent(out) :: status
+    integer :: n,b,next,d,v,i,j,k
+    !$macro_declarations
+    status=HY_BAD_INPUT
+    select type(context)
+    type is(uniformmesh_grid_t)
+      if (nDim<1 .or. nDim>3) return
+      do n=1,size(blocks)
+        b=blocks(n)%block
+        do d=1,nDim
+          next=mesh_f_neighbor(context%meshes(1),b,d,1)
+          if (d==1) then
+            do k=blocks(n)%lo(3),blocks(n)%hi(3)
+              do j=blocks(n)%lo(2),blocks(n)%hi(2)
+                do v=1,5
+                  @face_ref(flux,fluxMap(v),b,1,blocks(n)%hi(1)+1,j,k)@= &
+                  @face_ref(flux,fluxMap(v),next,1,blocks(n)%lo(1),j,k)@
+                end do
+              end do
+            end do
+          else if (d==2) then
+            do k=blocks(n)%lo(3),blocks(n)%hi(3)
+              do i=blocks(n)%lo(1),blocks(n)%hi(1)
+                do v=1,5
+                  @face_ref(flux,fluxMap(v),b,2,i,blocks(n)%hi(2)+1,k)@= &
+                  @face_ref(flux,fluxMap(v),next,2,i,blocks(n)%lo(2),k)@
+                end do
+              end do
+            end do
+          else
+            do j=blocks(n)%lo(2),blocks(n)%hi(2)
+              do i=blocks(n)%lo(1),blocks(n)%hi(1)
+                do v=1,5
+                  @face_ref(flux,fluxMap(v),b,3,i,j,blocks(n)%hi(3)+1)@= &
+                  @face_ref(flux,fluxMap(v),next,3,i,j,blocks(n)%lo(3))@
+                end do
+              end do
+            end do
+          end if
+        end do
+      end do
+      status=HY_OK
+    end select
+  end subroutine um_synchronizeFlux
+
+  subroutine serial_reduceLimits(context,localDt,localSpeed,localLoc,globalDt,globalSpeed,globalLoc,status)
+    class(hydro_grid_context_t), intent(inout) :: context
+    real(rk), intent(in) :: localDt,localSpeed
+    integer, intent(in) :: localLoc(5)
+    real(rk), intent(out) :: globalDt,globalSpeed
+    integer, intent(out) :: globalLoc(5),status
+    globalDt=localDt; globalSpeed=localSpeed; globalLoc=localLoc; status=HY_OK
+  end subroutine serial_reduceLimits
+
+  ! Ideal-gas EOS: recompute pressure (field 5) and gamma (field 6) from density
+  ! and specific internal energy over the interior of every block, any ndim.
+  subroutine idealGas_eos(context,state,blocks,inputMap,status)
+    !$macro_imports
+    class(hydro_grid_context_t), intent(inout) :: context
+    type(cell_field), intent(inout) :: state
+    type(hydro_block_t), intent(in) :: blocks(:)
+    integer, intent(in) :: inputMap(7)
+    integer, intent(out) :: status
+    integer :: n,b,i,j,k
+    real(rk) :: rho,eint
+    !$macro_declarations
+    status=HY_BAD_INPUT
+    select type(context)
+    type is(uniformmesh_grid_t)
+      if (.not.ieee_is_finite(context%gamma) .or. context%gamma<=1._rk) return
+      do n=1,size(blocks)
+        b=blocks(n)%block
+        do k=blocks(n)%lo(3),blocks(n)%hi(3)
+          do j=blocks(n)%lo(2),blocks(n)%hi(2)
+            do i=blocks(n)%lo(1),blocks(n)%hi(1)
+              rho=@cell_ref(state,inputMap(1),b,i,j,k)@
+              eint=@cell_ref(state,inputMap(7),b,i,j,k)@
+              if (.not.all(ieee_is_finite([rho,eint]))) then
+                status=HY_BAD_STATE; return
+              end if
+              if (rho<=0._rk .or. eint<=0._rk) then
+                status=HY_BAD_STATE; return
+              end if
+              @cell_ref(state,inputMap(5),b,i,j,k)@=(context%gamma-1._rk)*rho*eint
+              @cell_ref(state,inputMap(6),b,i,j,k)@=context%gamma
+            end do
+          end do
+        end do
+      end do
+      status=HY_OK
+    end select
+  end subroutine idealGas_eos
+end module uniformmesh_grid

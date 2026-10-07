@@ -1,0 +1,134 @@
+--- a/build_standalone.py
++++ b/build_standalone.py
+@@ -1,6 +1,8 @@
+ #!/usr/bin/env python3
+ """Expand and build the periodic driver without Flash-X modules or headers."""
+ import argparse
++import os
++import sys
+ from pathlib import Path
+ import shutil
+ import subprocess
+@@ -14,30 +16,63 @@
+     definitions = [ROOT / name for name in [
+         "hydro_layout.ini", "hydro_helpers.ini", "update_helpers.ini",
+         "diagnostic_helpers.ini", "driver_helpers.ini"]]
+-    overrides = {"spatial-first": "hydro_layout_spatial_first.ini", "records": "hydro_layout_records.ini"}
+-    if layout in overrides:
++    overrides = {"spatial-first": "hydro_layout_spatial_first.ini",
++                 "records": "hydro_layout_records.ini",
++                 "uniformmesh": "hydro_layout_uniformmesh.ini"}
++    uniformmesh = layout == "uniformmesh"
++    sources = []          # compiled in this order, so module files are available
++    extra_objs = []       # C / mesh objects to link
++    if uniformmesh:
++        # compile the mesh core (from the UniformMesh repo) before the providers
++        um = Path(os.environ.get("UNIFORMMESH", Path.home() / "UniformMesh")).resolve()
++        dim = os.environ.get("UNIFORMMESH_DIM", "1d")
++        subprocess.run([sys.executable, str(um / "ini_to_h.py"),
++                        str(um / "macros" / "general.ini"), str(um / "macros" / f"dim_{dim}.ini"),
++                        str(um / "macros" / "layout_aos.ini"), str(um / "macros" / "halo_4.ini"),
++                        "-o", str(output / "mesh_config.h")], check=True)
++        for name in ["mesh.c", "mesh_bind.c", "mesh.h", "mesh_f.F90"]:
++            shutil.copy(um / name, output / name)
++        # C side, then the F90 binding (f2008 + CPP), then the providers
++        cc = shutil.which("gcc")
++        for name in ["mesh.c", "mesh_bind.c"]:
++            subprocess.run([cc, "-std=c11", "-O2", "-c", name, "-o", name[:-2] + ".o"],
++                           cwd=output, check=True)
++            extra_objs.append(name[:-2] + ".o")
++        subprocess.run([compiler, "-cpp", "-O2", "-fcheck=all", "-c", "mesh_f.F90",
++                        "-o", "mesh_f.o", "-J", "."], cwd=output, check=True)
++        extra_objs.append("mesh_f.o")
++        definitions.append(ROOT / overrides["uniformmesh"])
++    elif layout in overrides:
+         definitions.append(ROOT / overrides[layout])
+     expander = macros.MacroExpander(macros.load_macros(definitions))
+-    sources = []
+     for name in [
+         "hy_getFaceFlux", "hy_updateSolution", "hy_shockDetect",
+         "hy_computeDt", "hydro_grid_contract", "hy_prepareAdvance",
+-        "periodic_grid_example", "periodic_shock_tube"]:
++        "uniformmesh_grid" if uniformmesh else "periodic_grid_example",
++        "uniformmesh_shock_tube" if uniformmesh else "periodic_shock_tube"]:
+         template = ROOT / (name + ".F90-mc")
+         source = output / (name + ".f90")
+         if template.exists():
+             macros.expand_file(template, source, expander)
+         else:
+             source.write_text(macros.wrap_fortran((ROOT / (name + ".F90")).read_text()))
+-        sources.append(source.name)
+-    subprocess.run([compiler, "-std=f2003", "-O2", "-fcheck=all", "-ffpe-trap=invalid,zero,overflow",
+-                    *sources, "-o", "periodic_shock_tube"], cwd=output, check=True)
++        sources.append(name)
++    # compile providers in order (deps on modules from earlier files)
++    objs = []
++    for name in sources:
++        src = output / (name + ".f90")
++        obj = output / (name + ".o")
++        subprocess.run([compiler, "-std=f2003", "-O2", "-fcheck=all", "-ffpe-trap=invalid,zero,overflow",
++                        "-c", src.name, "-o", obj.name, "-J", "."], cwd=output, check=True)
++        objs.append(obj.name)
++    subprocess.run([compiler, *extra_objs, *objs, "-o", "periodic_shock_tube"],
++                   cwd=output, check=True)
+     return output / "periodic_shock_tube"
+ 
+ if __name__ == "__main__":
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--output", type=Path, default=ROOT / "build" / "standalone")
+-    parser.add_argument("--layout", choices=["variable-first", "spatial-first", "records"],
++    parser.add_argument("--layout", choices=["variable-first", "spatial-first", "records", "uniformmesh"],
+                         default="variable-first")
+     parser.add_argument("--compiler", default="gfortran")
+     args = parser.parse_args()
+--- a/test_standalone.py
++++ b/test_standalone.py
+@@ -58,5 +58,48 @@
+                                      capture_output=True, text=True)
+                 self.assertNotEqual(bad.returncode, 0)
+ 
++    def test_uniformmesh_sod(self):
++        """UniformMesh-backed Sod must be bitwise-identical to periodic_grid_example."""
++        for tool in ("gfortran", "gcc"):
++            if not shutil.which(tool):
++                self.skipTest(f"{tool} is required")
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            um = build(root / "um", "uniformmesh")
++            var = build(root / "var", "variable-first")
++            for scheme in [2, 3]:
++                baseline = None
++                for blocks in [1, 4]:
++                    with self.subTest(scheme=scheme, blocks=blocks):
++                        out_um = root / f"um-{scheme}-{blocks}.csv"
++                        out_var = root / f"var-{scheme}-{blocks}.csv"
++                        for exe, out in [(um, out_um), (var, out_var)]:
++                            r = subprocess.run([str(exe), "128", str(blocks), "0.05", str(out), str(scheme)],
++                                               capture_output=True, text=True)
++                            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++                        def load(path):
++                            with path.open() as stream:
++                                return [[float(v) for v in row.values()]
++                                        for row in csv.DictReader(stream)]
++                        rows = load(out_um)
++                        self.assertEqual(len(rows), 128)
++                        self.assertTrue(all(math.isfinite(v) for row in rows for v in row))
++                        self.assertTrue(all(row[1] > 0 and row[3] > 0 and row[4] > 0 for row in rows))
++                        mass = sum(row[1] for row in rows) / 128
++                        momentum = sum(row[1] * row[2] for row in rows) / 128
++                        energy = sum(row[1] * row[5] for row in rows) / 128
++                        self.assertAlmostEqual(mass, 0.5625, delta=1e-10)
++                        self.assertAlmostEqual(momentum, 0, delta=1e-10)
++                        self.assertAlmostEqual(energy, 1.375, delta=1e-10)
++                        # uniformmesh must reproduce periodic_grid_example bit-for-bit
++                        if baseline is None:
++                            baseline = load(out_var)
++                        ref = load(out_var)
++                        max_difference = max(abs(a - b)
++                                             for ra, rb in zip(rows, ref)
++                                             for a, b in zip(ra, rb))
++                        self.assertLessEqual(max_difference, 0,
++                                             "uniformmesh differs from periodic_grid_example")
++
+ if __name__ == "__main__":
+     unittest.main()
