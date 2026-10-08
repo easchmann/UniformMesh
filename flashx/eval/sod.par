@@ -1,23 +1,23 @@
 # Sod shock tube on the UniformMesh NewImpl (UG Grid, 1 MPI rank, periodic)
 # The mesh wraps the global periodic domain; the Sod discontinuity is at x=0.5.
-iGridSize       = 128
-jGridSize       = 16
+iGridSize       = 256
+jGridSize       = 256
 
 #               UniformMeshNewImpl
 um_nblockx      = 4
-um_nblocky      = 1
+um_nblocky      = 4
 um_dumpInterval = 25
 
 #               simulation parameters
 basenm          = "sod_um_"
 log_file        = "sod_um.log"
 restart         = .false.
-nend            = 200
+nend            = 100000    # large: the run ends at tmax
 tmax = 0.025
-cfl             = 0.8
-dtmin           = 1.e-6
-dtmax           = 1.e-3
-dtinit          = 1.e-3
+cfl             = 0.5
+dtmin           = 1.e-8
+dtmax           = 1.0    # dt is set by the CFL condition
+dtinit          = 1.e-4
 
 # Spark solver settings (read by both plain Spark and UniformMeshNewImpl)
 use_hybridRiemann = .false.   # HLLC everywhere (Spark's default)
@@ -34,7 +34,7 @@ sim_uLeft       = 0.0
 sim_uRight      = 0.0
 sim_posn        = 0.5
 
-# pitch (2D slab) thickness 1 in the periodic transverse axis
+# 2D: the solution is uniform in y (the interface is normal to x)
 xmin            = 0.0
 xmax            = 1.0
 ymin            = 0.0

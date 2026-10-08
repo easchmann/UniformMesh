@@ -37,10 +37,11 @@ Both are Flash-X's own simulation units (`Simulation/SimulationMain/IsentropicVo
 
 | | Isentropic vortex | Sod | Sod, hybrid solver |
 |---|---|---|---|
-| Grid | 64 x 64, domain [0,10]^2 | 128 x 16, domain [0,1]^2 | same as Sod |
+| Grid | 256 x 256, domain [0,10]^2 | 256 x 256, domain [0,1]^2 (uniform in y) | same as Sod |
 | Boundaries | periodic | periodic (two mirror-image wave systems: at x = 0.5 and at x = 0) | same |
-| End | t = 10 (one period, 400 steps) | t = 0.025 (26 steps) | same |
-| dt | fixed 0.025 (`dtmin = dtmax`) | capped at 1e-3 (`dtmax`) | same |
+| End | t = 10 exactly (one period) | t = 0.025 | same |
+| dt | set by the CFL condition (`dtmax` large, `nend` large) | same | same |
+| CFL | 0.5 | 0.5 | 0.5 |
 | Riemann solver | HLLC (no shocks) | HLLC everywhere (`use_hybridRiemann = .false.`, Spark's default) | HLLE in shock-flagged cells (`use_hybridRiemann = .true.`) |
 | What it tests | smooth flow | shocks: shock detection, flattening, viscosity | the hybrid HLLE path in addition |
 
@@ -57,10 +58,11 @@ wave systems meet.
 
 ## Checks (`run.sh`)
 
-1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 16x16, 4x1, 1x8, Sod
-   with 4x1, 8x2, 16x4, 32x1 and Sod-hybrid with 4x1, 16x4; every final checkpoint must
-   be bitwise identical to the 1x1 run (`sfocu` SUCCESS). Tests halo exchange, flux
-   synchronisation and the neighbour lookup.
+1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 4x1, 1x8, Sod with 4x1,
+   8x2, 16x2 and Sod-hybrid with 4x1, 8x2; every final checkpoint must be bitwise
+   identical to the 1x1 run (`sfocu` SUCCESS). Tests halo exchange, flux synchronisation
+   and the neighbour lookup. Every block has at least 8 cells per axis (`MIN_BLOCK_CELLS`
+   in `config.sh`; `run.sh` refuses smaller splits).
 2. **NewImpl vs plain Spark**: vortex must agree to roundoff (max `sfocu` mag error
    <= 1e-12). The Sod problems are reported only (INFO): NewImpl and Spark differ near
    shocks; the summary lists the error norms and the sum of `velx`, which is 0 for a
@@ -69,8 +71,8 @@ wave systems meet.
 
 4. **Exact solution and plots** (`plot.py`, information only): the final checkpoints of
    NewImpl and Spark are compared with the exact solution **at the checkpoint's own time**
-   (runs stop at `nend` or just past `tmax`, e.g. the vortex at t = 9.979, not 10, so
-   "last minus first checkpoint" would include the vortex's missing 0.021 of travel):
+   (in general a run need not end exactly at the nominal time, e.g. when it stops at
+   `nend`, so the exact solution is evaluated at the stored time):
    - vortex: the initial vortex moved by (u_ambient·t, v_ambient·t), built exactly like
      `Simulation_initBlock` (sub-point averages, nearest periodic image);
    - Sod: exact Riemann solutions (Toro) at `sim_posn` (left|right) and at `xmin`
@@ -102,7 +104,9 @@ Checkpoints open in VisIt/yt, or with `h5dump`. To look at a result on the lapto
 rsync -az --exclude '*_hdf5_*' riken:Flash-X-MOL/eval_runs/<date>/ eval_runs/<date>/   # without the HDF5 files
 ```
 
-Results (Flash-X `44188e65b`, UniformMesh `c696ce3` + the solver-settings fix):
+Results (Flash-X `44188e65b`, UniformMesh `c696ce3` + the solver-settings fix; obtained
+with the earlier settings: vortex 64x64 and Sod 128x16, fixed or capped dt, CFL 0.8, splits
+down to 4 cells per block):
 - all block splits bitwise identical (vortex, Sod, Sod-hybrid);
 - vortex: NewImpl = Spark to ~1e-14; error vs exact at t = 9.979: dens L1 3.3e-4,
   Linf 7.6e-3 (identical for both);
@@ -118,8 +122,6 @@ Results (Flash-X `44188e65b`, UniformMesh `c696ce3` + the solver-settings fix):
 
 ## Not covered
 
-- dt is fixed/capped in both problems, so the CFL-limited path (and the dt tolerance in
-  `Hydro.F90-mc`) is not exercised; a convergence study with a large `dtmax` would be.
 - Order of accuracy (one resolution per problem), RK3 (`Spark/rk3`) builds, 3D, more
   than one MPI rank.
 - Restart from a checkpoint: the UG reader of `hdf5/parallel/NoFbs` calls the stub

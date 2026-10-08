@@ -74,6 +74,14 @@ for p in "${PROBLEMS[@]}"; do
     [ -x "$ni/flashx" ] && [ -x "$ref/flashx" ] || die "missing executables for $name, run build.sh first"
     splits_var="SPLITS_$name[@]"; compare_var="COMPARE_$name"
     splits=("${!splits_var}"); compare=${!compare_var}
+    # every split must divide the grid and leave >= MIN_BLOCK_CELLS cells per block on each used axis
+    gx=$(awk '$1 == "iGridSize" {print $3}' "$EVAL_DIR/$par"); gy=$(awk '$1 == "jGridSize" {print $3}' "$EVAL_DIR/$par")
+    for s in "${splits[@]}"; do
+        bx=${s%x*}; by=${s#*x}
+        { [ $((gx % bx)) -eq 0 ] && [ $((gy % by)) -eq 0 ] && [ $((gx / bx)) -ge "$MIN_BLOCK_CELLS" ] &&
+          { [ "$gy" -le 1 ] || [ $((gy / by)) -ge "$MIN_BLOCK_CELLS" ]; }; } ||
+            die "$name: split $s of ${gx}x${gy} cells leaves blocks smaller than $MIN_BLOCK_CELLS cells per axis (or does not divide)"
+    done
 
     log "$name: running ${#splits[@]} block splits and the Spark reference"
     for s in "${splits[@]}"; do

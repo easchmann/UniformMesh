@@ -3,26 +3,26 @@
 #  The vortex is advected diagonally and is back at the center at t = 10.
 
 #               grid (UG with +nofbs: the global size is set here)
-iGridSize       = 64
-jGridSize       = 64
+iGridSize       = 256
+jGridSize       = 256
 
 #               UniformMesh
 um_nblockx      = 4      # must divide iGridSize, blocks need >= NGUARD cells
 um_nblocky      = 4
-um_dumpInterval = 100    # write the mesh to um_dump_<step>.bin at the start and every 100 steps (0 = off)
+um_dumpInterval = 500    # write the mesh to um_dump_<step>.bin at the start and every 500 steps (0 = off)
 
 #               simulation parameters
 basenm          = "isentropic_vortex_"
 log_file        = "isentropic_vortex.log"
 restart         = .false.
 
-nend            = 400
+nend            = 100000    # large: the run ends at tmax
 tmax            = 10.
 
-cfl             = .8
-dtmin           = 2.5e-02
-dtmax           = 2.5e-02
-dtinit          = 2.5e-02
+cfl             = 0.5
+dtmin           = 1.e-8
+dtmax           = 1.0    # dt is set by the CFL condition
+dtinit          = 1.e-3
 
 #               problem parameters
 gamma           = 1.4

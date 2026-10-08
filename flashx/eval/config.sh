@@ -35,10 +35,13 @@ SFOCU="$FLASHX/tools/sfocu/sfocu"
 PROBLEMS=("vortex IsentropicVortex vortex.par vortex"
           "sod Sod sod.par sod"
           "sod_hybrid Sod sod_hybrid.par sod")
-# block splits (nbx x nby) for the split-invariance test; 1x1 is the baseline
-SPLITS_vortex=(1x1 2x2 4x4 8x8 16x16 4x1 1x8)
-SPLITS_sod=(1x1 4x1 8x2 16x4 32x1)
-SPLITS_sod_hybrid=(1x1 4x1 16x4)
+# block splits (nbx x nby) for the split-invariance test; 1x1 is the baseline.
+# Every block needs at least MIN_BLOCK_CELLS cells per used axis (run.sh checks it):
+# all grids are 256x256 -> up to 32 blocks per axis.
+MIN_BLOCK_CELLS=${MIN_BLOCK_CELLS:-8}
+SPLITS_vortex=(1x1 2x2 4x4 8x8 32x32 4x1 1x16)
+SPLITS_sod=(1x1 4x1 8x2 16x16 32x4)
+SPLITS_sod_hybrid=(1x1 4x1 16x16)
 # split used for the NewImpl-vs-Spark comparison
 COMPARE_vortex=4x4
 COMPARE_sod=4x1
