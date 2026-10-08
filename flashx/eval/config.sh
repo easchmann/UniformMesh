@@ -33,9 +33,11 @@ SFOCU="$FLASHX/tools/sfocu/sfocu"
 # Problems with the same build share the executables and differ only in parameters
 # (sod: hybrid Riemann solver off, Spark's default; sod_hybrid: on, in both codes).
 # vortex: dt from the CFL condition (accuracy); vortex_fixeddt: fixed dt, so NewImpl and
-# Spark take identical steps (strict code-equivalence check).
+# Spark take identical steps (one full period); vortex_short: the same for 100 steps only
+# (strict roundoff check). Vortex problems use CFL 0.4, Sod CFL 0.5.
 PROBLEMS=("vortex IsentropicVortex vortex.par vortex"
           "vortex_fixeddt IsentropicVortex vortex_fixeddt.par vortex"
+          "vortex_short IsentropicVortex vortex_short.par vortex"
           "sod Sod sod.par sod"
           "sod_hybrid Sod sod_hybrid.par sod")
 # ONLY="name ..." restricts run.sh to these problems (e.g. ONLY=vortex_fixeddt)
@@ -48,11 +50,20 @@ SPLITS_vortex=(1x1 2x2 4x4 8x8 32x32 4x1 1x16)
 SPLITS_sod=(1x1 4x1 8x2 16x16 32x4)
 SPLITS_sod_hybrid=(1x1 4x1 16x16)
 SPLITS_vortex_fixeddt=(1x1 4x4 32x32)
+SPLITS_vortex_short=(1x1 4x4 32x32)
 # split used for the NewImpl-vs-Spark comparison
 COMPARE_vortex=4x4
 COMPARE_vortex_fixeddt=4x4
+COMPARE_vortex_short=4x4
 COMPARE_sod=4x1
 COMPARE_sod_hybrid=4x1
+
+# vortex problems: |NewImpl - Spark| <= REL_TOL_<name> x |Spark - exact| (plot.py).
+# dt from CFL: steps drift apart, a few percent; fixed dt: identical steps, only WENO-Z
+# weight sensitivity in near-constant regions remains (~1e-5 of the error at 256^2).
+REL_TOL_vortex=0.05
+REL_TOL_vortex_fixeddt=1e-3
+REL_TOL_vortex_short=1e-3
 
 # object directories in $FLASHX: eval_<build>_ni (NewImpl on the UniformMesh), eval_<build>_ref (plain Spark)
 objdir() { echo "eval_$1_$2"; }

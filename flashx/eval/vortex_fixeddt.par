@@ -21,7 +21,7 @@ restart         = .false.
 nend            = 100000    # large: the run ends at tmax
 tmax            = 10.
 
-cfl             = 0.5
+cfl             = 0.4    # 0.5 gives a grid-scale checkerboard for the diagonal flow (see eval/results_20261008-113150.md)
 dtmin           = 5.e-3    # fixed dt, below the CFL limit (~6.7e-3 at cfl 0.5, 256x256)
 dtmax           = 5.e-3
 dtinit          = 5.e-3

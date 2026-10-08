@@ -31,7 +31,7 @@ with HDF5 IO. The NewImpl builds add `--with-unit=physics/Hydro/HydroMain/Spark/
 `build.sh` reinstalls that sub-unit from this repo (`flashx/install_newimpl.sh`, dim 2d,
 halo 4) before building, so they always use the current working copy.
 
-## Problems (`vortex.par`, `vortex_fixeddt.par`, `sod.par`, `sod_hybrid.par`)
+## Problems (`vortex*.par`, `sod.par`, `sod_hybrid.par`)
 
 Both are Flash-X's own simulation units (`Simulation/SimulationMain/IsentropicVortex`,
 `.../Sod`); the parameter files here adapt them to the mesh (uniform blocks, periodic).
@@ -42,15 +42,22 @@ Both are Flash-X's own simulation units (`Simulation/SimulationMain/IsentropicVo
 | Boundaries | periodic | periodic (two mirror-image wave systems: at x = 0.5 and at x = 0) | same |
 | End | t = 10 exactly (one period) | t = 0.025 | same |
 | dt | set by the CFL condition (`dtmax` large, `nend` large) | same | same |
-| CFL | 0.5 | 0.5 | 0.5 |
+| CFL | 0.4 (0.5 gives a grid-scale checkerboard, see below) | 0.5 | 0.5 |
 | Riemann solver | HLLC (no shocks) | HLLC everywhere (`use_hybridRiemann = .false.`, Spark's default) | HLLE in shock-flagged cells (`use_hybridRiemann = .true.`) |
 | What it tests | smooth flow | shocks: shock detection, flattening, viscosity | the hybrid HLLE path in addition |
 
-`vortex_fixeddt` is the vortex with a fixed dt = 0.005 (below the CFL limit of ~0.0067), so
-NewImpl and Spark take identical steps; it runs on the vortex executables. With dt from the
-CFL condition each code picks dt from its own solution, and roundoff-level differences
-between the two codes change the step sequence, so only the fixed-dt variant can be
-compared to roundoff. `sod_hybrid` runs on the Sod executables; only the parameter file differs. NewImpl takes
+Vortex variants, all on the vortex executables:
+- `vortex_fixeddt`: fixed dt = 0.005 (below the CFL limit of ~0.0067), so NewImpl and Spark
+  take identical steps over the full period. With dt from the CFL condition each code picks
+  dt from its own solution and the step sequences drift apart.
+- `vortex_short`: as `vortex_fixeddt`, but 100 steps: the strict roundoff comparison. Over a
+  full period at 256^2, WENO-Z (epsilon 1e-36 in both codes) amplifies rounding differences
+  in near-constant regions to ~1e-8 even with identical steps, because NewImpl evaluates the
+  same formulas in a different order.
+- All vortex problems use CFL 0.4. At CFL 0.5 both codes show a grid-scale checkerboard and
+  twice the maximum error: dt uses the largest directional signal speed, so for the diagonal
+  advection the effective 2D Courant number is about twice the nominal one
+  (`results_20261008-113150.md`). `sod_hybrid` runs on the Sod executables; only the parameter file differs. NewImpl takes
 `use_hybridRiemann`, `use_flattening`, `cvisc`, `smlrho` and `smallp` from Spark's runtime
 parameters (as NewImpl's own `hy_rk_getFaceFlux_wrapper` does), so both codes always run
 with the same solver settings.
@@ -64,16 +71,17 @@ wave systems meet.
 ## Checks (`run.sh`)
 
 1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 32x32, 4x1, 1x16,
-   vortex_fixeddt with 4x4, 32x32, Sod with 4x1, 8x2, 16x16, 32x4 and Sod-hybrid with 4x1,
+   vortex_fixeddt and vortex_short with 4x4, 32x32, Sod with 4x1, 8x2, 16x16, 32x4 and Sod-hybrid with 4x1,
    16x16; every final checkpoint must be bitwise
    identical to the 1x1 run (`sfocu` SUCCESS). Tests halo exchange, flux synchronisation
    and the neighbour lookup. Every block has at least 8 cells per axis (`MIN_BLOCK_CELLS`
    in `config.sh`; `run.sh` refuses smaller splits).
 2. **NewImpl vs plain Spark**:
-   - `vortex_fixeddt` (identical steps) must agree to roundoff: max `sfocu` mag error
-     <= 1e-12 (`VORTEX_TOL`);
-   - `vortex` (dt from CFL) must agree to a small fraction of the discretisation error:
-     |NewImpl − Spark| <= 5 % of |Spark − exact| in L1 and Linf (`REL_TOL`, checked by `plot.py`);
+   - `vortex_short` (identical steps, 100 steps) must agree to roundoff: max `sfocu` mag
+     error <= 1e-11 (`VORTEX_TOL`; single cells reach ~1e-12 after 100 steps at 256^2);
+   - the other vortex problems must agree to a fraction of the discretisation error:
+     |NewImpl − Spark| <= `REL_TOL_<name>` × |Spark − exact| in L1 and Linf (checked by
+     `plot.py`): 1e-3 with fixed dt (`vortex_fixeddt`), 5 % with dt from CFL (`vortex`);
    - the Sod problems are reported only (INFO): NewImpl and Spark differ near shocks, and
      with dt from CFL the two runs end at different times, so they are judged against the
      exact solution; the summary lists the error norms and the sum of `velx`, which is 0
