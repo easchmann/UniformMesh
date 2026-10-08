@@ -11,6 +11,7 @@ git clone https://github.com/easchmann/UniformMesh ~/UniformMesh
 ~/UniformMesh/flashx/eval/prepare.sh   # once: HDF5, site file, Spark/Makefile fix, sfocu
 ~/UniformMesh/flashx/eval/build.sh     # 4 executables
 ~/UniformMesh/flashx/eval/run.sh       # runs + comparisons -> eval_runs/<date>/summary.txt
+                                       # (ONLY="vortex_fixeddt" for selected problems)
 ```
 
 All paths and versions are in `config.sh` and can be overridden from the environment
@@ -30,7 +31,7 @@ with HDF5 IO. The NewImpl builds add `--with-unit=physics/Hydro/HydroMain/Spark/
 `build.sh` reinstalls that sub-unit from this repo (`flashx/install_newimpl.sh`, dim 2d,
 halo 4) before building, so they always use the current working copy.
 
-## Problems (`vortex.par`, `sod.par`, `sod_hybrid.par`)
+## Problems (`vortex.par`, `vortex_fixeddt.par`, `sod.par`, `sod_hybrid.par`)
 
 Both are Flash-X's own simulation units (`Simulation/SimulationMain/IsentropicVortex`,
 `.../Sod`); the parameter files here adapt them to the mesh (uniform blocks, periodic).
@@ -45,7 +46,11 @@ Both are Flash-X's own simulation units (`Simulation/SimulationMain/IsentropicVo
 | Riemann solver | HLLC (no shocks) | HLLC everywhere (`use_hybridRiemann = .false.`, Spark's default) | HLLE in shock-flagged cells (`use_hybridRiemann = .true.`) |
 | What it tests | smooth flow | shocks: shock detection, flattening, viscosity | the hybrid HLLE path in addition |
 
-`sod_hybrid` runs on the Sod executables; only the parameter file differs. NewImpl takes
+`vortex_fixeddt` is the vortex with a fixed dt = 0.005 (below the CFL limit of ~0.0067), so
+NewImpl and Spark take identical steps; it runs on the vortex executables. With dt from the
+CFL condition each code picks dt from its own solution, and roundoff-level differences
+between the two codes change the step sequence, so only the fixed-dt variant can be
+compared to roundoff. `sod_hybrid` runs on the Sod executables; only the parameter file differs. NewImpl takes
 `use_hybridRiemann`, `use_flattening`, `cvisc`, `smlrho` and `smallp` from Spark's runtime
 parameters (as NewImpl's own `hy_rk_getFaceFlux_wrapper` does), so both codes always run
 with the same solver settings.
@@ -58,18 +63,24 @@ wave systems meet.
 
 ## Checks (`run.sh`)
 
-1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 4x1, 1x8, Sod with 4x1,
-   8x2, 16x2 and Sod-hybrid with 4x1, 8x2; every final checkpoint must be bitwise
+1. **Block-split invariance**: vortex with blocks 2x2, 4x4, 8x8, 32x32, 4x1, 1x16,
+   vortex_fixeddt with 4x4, 32x32, Sod with 4x1, 8x2, 16x16, 32x4 and Sod-hybrid with 4x1,
+   16x16; every final checkpoint must be bitwise
    identical to the 1x1 run (`sfocu` SUCCESS). Tests halo exchange, flux synchronisation
    and the neighbour lookup. Every block has at least 8 cells per axis (`MIN_BLOCK_CELLS`
    in `config.sh`; `run.sh` refuses smaller splits).
-2. **NewImpl vs plain Spark**: vortex must agree to roundoff (max `sfocu` mag error
-   <= 1e-12). The Sod problems are reported only (INFO): NewImpl and Spark differ near
-   shocks; the summary lists the error norms and the sum of `velx`, which is 0 for a
-   solution that keeps the problem's mirror symmetry about x = 0.25.
+2. **NewImpl vs plain Spark**:
+   - `vortex_fixeddt` (identical steps) must agree to roundoff: max `sfocu` mag error
+     <= 1e-12 (`VORTEX_TOL`);
+   - `vortex` (dt from CFL) must agree to a small fraction of the discretisation error:
+     |NewImpl − Spark| <= 5 % of |Spark − exact| in L1 and Linf (`REL_TOL`, checked by `plot.py`);
+   - the Sod problems are reported only (INFO): NewImpl and Spark differ near shocks, and
+     with dt from CFL the two runs end at different times, so they are judged against the
+     exact solution; the summary lists the error norms and the sum of `velx`, which is 0
+     for a solution that keeps the problem's mirror symmetry about x = 0.25.
 3. Both take the same number of steps.
 
-4. **Exact solution and plots** (`plot.py`, information only): the final checkpoints of
+4. **Exact solution and plots** (`plot.py`; information, plus the `vortex` REL_TOL check): the final checkpoints of
    NewImpl and Spark are compared with the exact solution **at the checkpoint's own time**
    (in general a run need not end exactly at the nominal time, e.g. when it stops at
    `nend`, so the exact solution is evaluated at the stored time):
@@ -91,8 +102,9 @@ eval_runs/<date>/
 ├── results.json       all plot.py metrics, per problem and implementation
 ├── plots/vortex.png   density NewImpl / exact / Spark, errors vs exact, NewImpl − Spark
 ├── plots/sod.png      rho, u, p profiles vs exact; mirror symmetry u(x) + u(x')
-├── plots/sod_hybrid.png  the same for the hybrid-solver variant
-└── vortex/, sod/, sod_hybrid/  ni_<split>/ and ref/ run directories (flash.par, run.out, *.log,
+├── plots/sod_hybrid.png, plots/vortex_fixeddt.png  the same for the variants
+├── plot.log           plot.py output (also appended to summary.txt)
+└── vortex/, vortex_fixeddt/, sod/, sod_hybrid/  ni_<split>/ and ref/ run directories (flash.par, run.out, *.log,
                        *_hdf5_chk_*, *_hdf5_plt_cnt_*), sfocu_*.txt reports
 ```
 

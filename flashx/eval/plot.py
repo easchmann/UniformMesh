@@ -222,6 +222,15 @@ def do_vortex(out, name, ni_dir, ref_dir):
     for impl, chk in runs.items():
         e = res[impl]["error_vs_exact"]["dens"]
         lines.append(f"{name}: {impl} at t={chk.time:.5g}: dens error vs exact L1 {e['L1']:.3e}, Linf {e['Linf']:.3e}")
+    # NewImpl and Spark must agree to a small fraction of the discretisation error; with dt
+    # from the CFL condition each code picks its own steps, so roundoff-level agreement is
+    # not expected (the fixed-dt variant is checked strictly by run.sh)
+    diff, err = res["NewImpl_vs_Spark"]["dens"], res["Spark"]["error_vs_exact"]["dens"]
+    ratio = {k: diff[k] / err[k] if err[k] > 0 else float("inf") for k in ("L1", "Linf")}
+    res["NewImpl_vs_Spark_relative_to_error"] = ratio
+    ok = all(r <= REL_TOL for r in ratio.values())
+    lines.append(f"{'PASS' if ok else 'FAIL'}  {name}: |NewImpl - Spark| / |Spark - exact| (dens) = "
+                 f"{ratio['L1']:.2e} (L1), {ratio['Linf']:.2e} (Linf), limit {REL_TOL:g}")
 
     ex = exact["NewImpl"]
     ext = [a.lo[0], a.hi[0], a.lo[1], a.hi[1]]
@@ -311,8 +320,9 @@ def do_sod(out, name, ni_dir, ref_dir):
     return res, lines
 
 
-# analysis by problem name prefix: vortex*, sod* (e.g. sod_hybrid)
+# analysis by problem name prefix: vortex*, sod* (e.g. vortex_fixeddt, sod_hybrid)
 KINDS = {"vortex": do_vortex, "sod": do_sod}
+REL_TOL = 0.05   # set from --rel-tol
 
 
 def main():
@@ -320,7 +330,10 @@ def main():
     ap.add_argument("out", type=Path, help="run.sh output directory")
     ap.add_argument("--compare", nargs="*", default=[], metavar="PROBLEM=SPLIT",
                     help="NewImpl block split to use (default 1x1; all splits are bitwise identical)")
+    ap.add_argument("--rel-tol", type=float, default=REL_TOL,
+                    help="vortex: max |NewImpl - Spark| as a fraction of the error vs exact (default 0.05)")
     args = ap.parse_args()
+    globals()["REL_TOL"] = args.rel_tol
     split = dict(s.split("=", 1) for s in args.compare)
 
     plots = args.out / "plots"
@@ -344,8 +357,8 @@ def main():
             continue
         res["plot"] = str(plots / f"{name}.png")
         results[name] = res
-        for line in lines:
-            print(f"INFO  {line}")
+        for line in lines:   # checks carry their own PASS/FAIL, everything else is INFO
+            print(line if line.startswith(("PASS  ", "FAIL  ")) else f"INFO  {line}")
         print(f"INFO  {name}: plot {plots / f'{name}.png'}")
     (args.out / "results.json").write_text(json.dumps(results, indent=2))
     print(f"INFO  metrics in {args.out / 'results.json'}")

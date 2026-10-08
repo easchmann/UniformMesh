@@ -32,9 +32,14 @@ SFOCU="$FLASHX/tools/sfocu/sfocu"
 # problems: name, Flash-X simulation, parameter file in this directory, build.
 # Problems with the same build share the executables and differ only in parameters
 # (sod: hybrid Riemann solver off, Spark's default; sod_hybrid: on, in both codes).
+# vortex: dt from the CFL condition (accuracy); vortex_fixeddt: fixed dt, so NewImpl and
+# Spark take identical steps (strict code-equivalence check).
 PROBLEMS=("vortex IsentropicVortex vortex.par vortex"
+          "vortex_fixeddt IsentropicVortex vortex_fixeddt.par vortex"
           "sod Sod sod.par sod"
           "sod_hybrid Sod sod_hybrid.par sod")
+# ONLY="name ..." restricts run.sh to these problems (e.g. ONLY=vortex_fixeddt)
+ONLY=${ONLY:-}
 # block splits (nbx x nby) for the split-invariance test; 1x1 is the baseline.
 # Every block needs at least MIN_BLOCK_CELLS cells per used axis (run.sh checks it):
 # all grids are 256x256 -> up to 32 blocks per axis.
@@ -42,8 +47,10 @@ MIN_BLOCK_CELLS=${MIN_BLOCK_CELLS:-8}
 SPLITS_vortex=(1x1 2x2 4x4 8x8 32x32 4x1 1x16)
 SPLITS_sod=(1x1 4x1 8x2 16x16 32x4)
 SPLITS_sod_hybrid=(1x1 4x1 16x16)
+SPLITS_vortex_fixeddt=(1x1 4x4 32x32)
 # split used for the NewImpl-vs-Spark comparison
 COMPARE_vortex=4x4
+COMPARE_vortex_fixeddt=4x4
 COMPARE_sod=4x1
 COMPARE_sod_hybrid=4x1
 

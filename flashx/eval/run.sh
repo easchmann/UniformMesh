@@ -3,18 +3,23 @@
 #   A. block-split invariance: every split of a problem must give a bitwise identical
 #      final checkpoint to the 1x1 run (sfocu SUCCESS)                      -> PASS/FAIL
 #   B. NewImpl vs plain Spark, same parameters:
-#      vortex (smooth): max sfocu mag error <= VORTEX_TOL                   -> PASS/FAIL
-#      sod, sod_hybrid (shocks; hybrid Riemann solver off / on in both)     -> INFO only
+#      vortex_fixeddt (fixed dt, identical steps): max sfocu mag error <= VORTEX_TOL -> PASS/FAIL
+#      vortex (dt from CFL: each code picks dt from its own solution, so steps drift
+#        apart at roundoff level): checked by plot.py against the exact solution
+#        (|NewImpl - Spark| <= REL_TOL x error vs exact)                    -> PASS/FAIL
+#      sod, sod_hybrid (shocks; dt from CFL, so the two end at different times) -> INFO
 #      (error norms, and the sum of velx, which is 0 for a solution that keeps the
 #      problem's mirror symmetry about x = 0.25)
 #   C. both kinds take the same number of steps                            -> PASS/FAIL
+#   D. plot.py: errors vs exact solutions, symmetry, plots, the REL_TOL check
 # Results: $OUT/summary.txt (+ versions.txt, every run directory and sfocu report).
 # Exit status 1 if any check fails.
-# usage: flashx/eval/run.sh        (settings: flashx/eval/config.sh, OUT=<dir> to choose the output)
+# usage: flashx/eval/run.sh   (settings: flashx/eval/config.sh; OUT=<dir>, ONLY="vortex_fixeddt ...")
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 
 VORTEX_TOL=${VORTEX_TOL:-1e-12}
+REL_TOL=${REL_TOL:-0.05}
 OUT=${OUT:-$FLASHX/eval_runs/$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$OUT"
 SUMMARY="$OUT/summary.txt"
@@ -70,6 +75,7 @@ run_case() {  # $1 = executable dir, $2 = run dir, $3 = par file, $4 = nbx, $5 =
 
 for p in "${PROBLEMS[@]}"; do
     read -r name sim par build <<< "$p"
+    if [ -n "$ONLY" ] && [[ " $ONLY " != *" $name "* ]]; then continue; fi
     ni="$FLASHX/$(objdir "$build" ni)"; ref="$FLASHX/$(objdir "$build" ref)"
     [ -x "$ni/flashx" ] && [ -x "$ref/flashx" ] || die "missing executables for $name, run build.sh first"
     splits_var="SPLITS_$name[@]"; compare_var="COMPARE_$name"
@@ -105,15 +111,18 @@ for p in "${PROBLEMS[@]}"; do
     rep="$OUT/$name/sfocu_ni_${compare}_vs_ref.txt"
     "$SFOCU" "$(lastchk "$OUT/$name/ni_$compare")" "$(lastchk "$OUT/$name/ref")" > "$rep" 2>&1 || true
     mag=$(sfocu_max "$rep" 3); l1=$(sfocu_max "$rep" 2)
-    if [ "$name" = vortex ]; then
+    case "$name" in
+    vortex_fixeddt)   # identical steps: the two codes must agree to roundoff
         if awk -v m="$mag" -v t="$VORTEX_TOL" 'BEGIN {exit !(m <= t)}'; then
             report PASS "$name: max mag error $mag <= $VORTEX_TOL (max L1 $l1)"
         else
             report FAIL "$name: max mag error $mag > $VORTEX_TOL (max L1 $l1), see $rep"
-        fi
-    else
-        report INFO "$name: max mag error $mag, max L1 $l1, sum(velx) NewImpl $(sfocu_col "$rep" velx 5) / Spark $(sfocu_col "$rep" velx 9), see $rep"
-    fi
+        fi ;;
+    vortex*)          # dt from CFL: roundoff-level step drift; judged against the exact solution (D)
+        report INFO "$name: max mag error $mag, max L1 $l1 (dt from CFL; checked against the exact solution below)" ;;
+    *)                # shocks, dt from CFL: the two runs end at different times
+        report INFO "$name: max mag error $mag, max L1 $l1 (end times differ, compare against the exact solution below), sum(velx) NewImpl $(sfocu_col "$rep" velx 5) / Spark $(sfocu_col "$rep" velx 9), see $rep" ;;
+    esac
     a=$(nsteps "$OUT/$name/ni_$compare"); b=$(nsteps "$OUT/$name/ref")
     if [ "$a" = "$b" ] && [ "$a" -gt 0 ]; then
         report PASS "$name: same number of steps ($a)"
@@ -129,8 +138,11 @@ if python3 -c "import numpy, h5py, matplotlib" 2> /dev/null; then
     for p in "${PROBLEMS[@]}"; do
         read -r name _ <<< "$p"; compare_var="COMPARE_$name"; compares+=("$name=${!compare_var}")
     done
-    python3 "$EVAL_DIR/plot.py" "$OUT" --compare "${compares[@]}" | tee -a "$SUMMARY" ||
-        echo "INFO  plot.py reported an error (see above); the checks are unaffected" | tee -a "$SUMMARY"
+    plot_log="$OUT/plot.log"
+    python3 "$EVAL_DIR/plot.py" "$OUT" --compare "${compares[@]}" --rel-tol "$REL_TOL" > "$plot_log" 2>&1 ||
+        echo "INFO  plot.py reported an error (see $plot_log)" >> "$plot_log"
+    tee -a "$SUMMARY" < "$plot_log"
+    failures=$((failures + $(grep -c '^FAIL' "$plot_log" || true)))
 else
     echo "INFO  skipped: python3 lacks numpy/h5py/matplotlib (python3 -m pip install --user h5py); run flashx/eval/plot.py $OUT later" | tee -a "$SUMMARY"
 fi
